@@ -8,10 +8,15 @@ from mmdet.utils import setup_cache_size_limit_of_dynamo
 from mmengine.config import Config, DictAction
 from mmengine.logging import print_log
 from mmengine.runner import Runner
+from mmengine.model import is_model_wrapper
+from mmyolo.models.dense_heads import YOLOv5HeadModule, YOLOv7HeadModule, YOLOv8HeadModule, YOLOv6HeadModule
 
 from mmyolo.registry import RUNNERS
 from mmyolo.utils import is_metainfo_lower
 
+from edgeai_torchmodelopt import xmodelopt
+# from edgeai_torchtoolkit import xao
+# from edgeai_torchtoolkit import xnn
 
 def parse_args():
     parser = argparse.ArgumentParser(description='Train a detector')
@@ -22,6 +27,11 @@ def parse_args():
         action='store_true',
         default=False,
         help='enable automatic-mixed-precision training')
+    parser.add_argument(
+        '--lite',
+        action='store_true',
+        default=False,
+        help='create lite version of a model by applying a set of fx based transformations on the model')
     parser.add_argument(
         '--resume',
         nargs='?',
@@ -49,12 +59,11 @@ def parse_args():
     # will pass the `--local-rank` parameter to `tools/train.py` instead
     # of `--local_rank`.
     parser.add_argument('--local_rank', '--local-rank', type=int, default=0)
+    parser.add_argument('--model-surgery', type=int, default=0)
     args = parser.parse_args()
     if 'LOCAL_RANK' not in os.environ:
         os.environ['LOCAL_RANK'] = str(args.local_rank)
-
     return args
-
 
 def main():
     args = parse_args()
@@ -116,6 +125,29 @@ def main():
         runner = RUNNERS.build(cfg)
 
     # start training
+    if args.model_surgery:
+        surgery_fn = xmodelopt.surgery.v1.convert_to_lite_model if args.model_surgery == 1 \
+                     else (xmodelopt.surgery.v2.convert_to_lite_fx if args.model_surgery == 2 else None)
+        
+        runner._init_model_weights()
+        if is_model_wrapper(runner.model):
+            runner.model = runner.model.module
+        runner.model.backbone = surgery_fn(runner.model.backbone)
+        runner.model.neck = surgery_fn(runner.model.neck)
+        # Only head_module of head goes through model_surgery as it contains all compute layers
+        if not isinstance(runner.model.bbox_head.head_module, (YOLOv5HeadModule, YOLOv7HeadModule, YOLOv8HeadModule, YOLOv6HeadModule)):
+            if hasattr(runner.model.bbox_head.head_module, 'reg_max'):
+                reg_max = runner.model.bbox_head.head_module.reg_max
+            else:
+                reg_max = None
+            runner.model.bbox_head.head_module = \
+                surgery_fn(runner.model.bbox_head.head_module)
+            if reg_max is not None:
+                runner.model.bbox_head.head_module.reg_max = reg_max
+        elif isinstance(runner.model.bbox_head.head_module, (YOLOv8HeadModule, YOLOv6HeadModule)):
+            runner.model.bbox_head.head_module = xmodelopt.surgery.v1.convert_to_lite_model(runner.model.bbox_head.head_module)
+        runner.model = runner.wrap_model(runner.cfg.get('model_wrapper_cfg'), runner.model)
+    print("\n\n model summary : \n",runner.model)
     runner.train()
 
 

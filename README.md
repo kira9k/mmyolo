@@ -1,3 +1,190 @@
+# EdgeAI-MMYOLO
+
+This repository is a fork of the popular [mmyolo](https://github.com/open-mmlab/mmyolo) open source repository for YOLO based object detection models. MMYOLO is an open source toolbox for YOLO series algorithms based on PyTorch and [MMDetection](https://github.com/open-mmlab/mmdetection). It is a part of the [OpenMMLab](https://openmmlab.com/) project. While mmyolo focuses on a wide variety of models, typically at high complexity, this fork focuses on models that are optimized for speed and accuracy so that they run efficiently on embedded devices. For this purpose, [edgeai-modeloptimization](https://github.com/TexasInstruments/edgeai-modeloptimization) toolkit is used to convert the models to an embedded friendly version.
+
+
+<hr>
+
+
+## Environment
+We have tested this on Ubuntu 22.04 OS and pyenv Python environment manager. Here are the setup instructions.
+
+Make sure that you are using bash shell. If it is not bash shell, change it to bash. Verify it by typing:
+```
+echo ${SHELL}
+```
+
+Install system packages
+```
+sudo apt update
+sudo apt install build-essential curl libbz2-dev libffi-dev liblzma-dev libncursesw5-dev libreadline-dev libsqlite3-dev libssl-dev libxml2-dev libxmlsec1-dev llvm make tk-dev wget xz-utils zlib1g-dev
+```
+
+Install pyenv using the following command.
+```
+curl -L https://github.com/pyenv/pyenv-installer/raw/master/bin/pyenv-installer | bash
+
+echo '# pyenv settings ' >> ${HOME}/.bashrc
+echo 'command -v pyenv >/dev/null || export PATH=":${HOME}/.pyenv/bin:$PATH"' >> ${HOME}/.bashrc
+echo 'eval "$(pyenv init -)"' >> ${HOME}/.bashrc
+echo 'eval "$(pyenv virtualenv-init -)"' >> ${HOME}/.bashrc
+echo '' >> ${HOME}/.bashrc
+
+exec ${SHELL}
+```
+
+Create a Python 3.10 environment if you don't have it and activate it before following the rest of the instructions.
+```
+pyenv install 3.10
+pyenv virtualenv 3.10 edge-mmyolo
+pyenv activate edge-mmyolo
+pip install --upgrade pip setuptools
+```
+
+
+Activation of Python environment - this activation step needs to be done everytime one starts a new terminal or shell. (Alternately, this also can be written to the .bashrc, so that this will be the default penv environment).
+```
+pyenv activate edge-mmyolo
+```
+
+
+## Installation Instructions
+Installation can be done by running:
+```
+setup.sh
+```
+
+For detailed installation instructions refer to [installation instructions](./docs/en/get_started/installation.md)
+
+## Download Dataset
+
+`tools/misc/download_dataset.py` supports downloading datasets such as `COCO`, `VOC`, `LVIS` and `Balloon`.
+
+```shell
+python tools/misc/download_dataset.py --dataset-name coco2017
+```
+
+## Get Started
+
+### Training
+
+Run the below command to start the training, work_dirs/yolov5_n-v61_syncbn_fast_8xb16-300e_coco.py folder will be automatically generated, the checkpoint file and the training config file will be saved in this folder. Make sure to use the proper config file path. The model-surgery flag uses the model optimization toolkit to convert the model to lite version(embedded friendly version).
+```
+python tools/train.py configs/yolov5/yolov5_n-v61_syncbn_fast_8xb16-300e_coco.py --model-surgery 2
+```
+To run the training in multiple GPU in parallel, use the following command
+```
+./tools/dist_train.sh configs/yolov5/yolov5_n-v61_syncbn_fast_8xb16-300e_coco.py {no. of GPUs}
+```
+
+### Testing
+
+Run the following command to get the test accuracy
+```
+python tools/test.py configs/yolov5/yolov5_n-v61_syncbn_fast_8xb16-300e_coco.py work_dirs/yolov5_n-v61_syncbn_fast_8xb16-300e_coco/epoch_40.pth --model-surgery 2 
+```
+To run the test in multiple GPU use the following command
+```
+./tools/dist_test.sh configs/yolov5/yolov5_n-v61_syncbn_fast_8xb16-300e_coco.py work_dirs/yolov5_n-v61_syncbn_fast_8xb16-300e_coco/epoch_40.pth {no. of GPUs}
+```
+###  Export
+
+**Export of ONNX model (.onnx) and additional meta information (.prototxt)** is supported. The .prototxt contains meta information specified by **TIDL** for object detectors. 
+
+This project is developed for easily converting MMYOLO models to other inference backends without the need of MMDeploy, which reduces the cost of both time and effort on getting familiar with MMDeploy.
+
+E.g. for easy deployment :
+
+```
+python projects/easydeploy/tools/export_onnx.py    \
+configs/yolov6/yolov6_n_syncbn_fast_8xb32-400e_coco.py     \
+work_dirs/yolov6_n_syncbn_fast_8xb32-400e_coco/epoch_60.pth    \
+	--work-dir work_dirs/yolov6_n_syncbn_fast_8xb32-400e_coco   \
+	--img-size 640 640   \
+	--batch 1    \
+	--device cpu    \
+	--simplify  \
+	--opset 11      \
+	--pre-topk 1000     \
+	--keep-topk 100      \
+	--iou-threshold 0.65    \
+	--score-threshold 0.25 \
+	--export-type YOLOv5 \
+	--model-surgery 2
+```
+The model-surgery flag uses the model optimization toolkit to convert the model to an embedded friendly version.
+
+For more information please refer to [MMYOLO Easy-Deployment](https://github.com/open-mmlab/mmyolo/blob/main/docs/en/get_started/15_minutes_object_detection.md#easydeploy-deployment)
+
+## Object Detection Model Zoo
+Complexity and Accuracy report of several trained models are reported here. The checkpoints and exported onnx models will be available in https://github.com/TexasInstruments/edgeai-modelzoo-cl
+
+### Models 
+The models are grouped in terms of repositories used to train them or the repositories through they are made available.
+
+
+| Dataset | Original Model    | Lite Model          | Input Size  | Original AP[0.5:0.95]%, AP50% | Lite AP[0.5:0.95]%, AP50% | GigaMACS   | config file | Notes |
+|---------|-------------------|---------------------|-------------|-------------------------------|---------------------------|------------|-----------------------------------------|-------|
+|         | **YOLOv5 models** 
+| COCO    | YOLOv5-nano       | YOLOv5-nano-lite    | 640x640     | 28.0, 45.9                    | **25.2**, 42.1            | **2.07**   | [config](./configs/yolov5/yolov5_n-v61_syncbn_fast_8xb16-300e_coco.py)|       |
+| COCO    | YOLOv5-small      | YOLOv5-small-lite   | 640x640     | 37.7, 57.1                    | **35.5**, 54.7            | **7.89**   | [config](./configs/yolov5/yolov5_s-v61_syncbn_fast_8xb16-300e_coco.py)        |       | 
+|         | **YOLOv7 models** 
+| COCO    | YOLOv7-tiny       | YOLOv7-tiny-lite    | 640x640     | 37.5, 55.8                    | **36.7**, 55.0            | **6.87**   | [config](./configs/yolov7/yolov7_tiny_syncbn_fast_8x16b-300e_coco.py)        |       |
+| COCO    | YOLOv7-large      | YOLOv7-large-lite   | 640x640     | 51.0, 69.0                    | **48.1**, 66.4            | **52.95**  | [config](./configs/yolov7/yolov7_l_syncbn_fast_8x16b-300e_coco.py)        |       |
+|         | **YOLOv8 models** 
+| COCO    | YOLOv8-nano       | YOLOv8-nano-lite    | 640x640     | 37.2, 52.7                    | **34.5**, 49.7            | **-**   | [config](./configs/yolov8/yolov8_n_syncbn_fast_8xb16-500e_coco.py)       |       |
+| COCO    | YOLOv8-small      | YOLOv8-small-lite   | 640x640     | 44.2, 61.0                    | **42.4**, 58.8            | **14.33**  | [config](./configs/yolov8/yolov8_s_syncbn_fast_8xb16-500e_coco.py)       |       |
+|         | **YOLOX models** 
+| COCO    | YOLOX-tiny        | YOLOX-tiny-lite     | 416x416     | 32.7, 50.3                    | **31.1**, 48.4            | **3.25**   | [config](./configs/yolox/yolox_tiny_fast_8xb8-300e_coco.py)      |       |
+| COCO    | YOLOX-small       | YOLOX-small-lite    | 640x640     | 40.7, 59.6                    | **38.7**, 57.4            | **7.85**   | [config](./configs/yolox/yolox_s_fast_8xb8-300e_coco.py)      |       |
+
+
+### Notes
+- GigaMACS: Complexity in Giga Multiply-Accumulations required for inference (lower is better). This is an important metric to watch out for when selecting models for embedded inference.<br>
+- Accuracy for Object Detection on COCO dataset primarily uses two accuracy metrics AP[0.5:0.95] and AP50 (in percentages). AP[0.5:0.95] is the Mean of Average Precision values computed at IOUs ranging from 0.5 to 0.95 and averaged. AP50 is the Average Precision computed at 0.5 IoU. If only one accuracy metric is mentioned in a table cell, then it is AP[0.5:0.95]. Be sure to compare using the same metric when comparing across various detectors or configurations.
+- Input size in the tables (*width x height*) indicates the resolution for the model input. Original input images can be resized to that resolution with preserving the aspect ratio (may need padding) or without preserving the aspect ratio (depending on the flag keep_ratio in config files).<br>
+
+
+
+
+
+## Acknowledgement
+
+This is an open source project that is contributed by researchers and engineers from various institutions. We appreciate all the contributors who implemented their methods or add new features, as well as users who give valuable feedbacks.
+
+
+## Citation
+
+This package/toolbox is an extension of mmyolo (https://github.com/open-mmlab/mmyolo). If you use this repository or benchmark in your research or work, please cite the following:
+
+```
+@article{EdgeAI-MMYOLO,
+  title   = {{EdgeAI-MMYOLO}: An Extension To Open MMLab Detection Toolbox and Benchmark},
+  author  = {Texas Instruments EdgeAI Development Team, edgeai-devkit@list.ti.com},
+  journal = {https://github.com/TexasInstruments/edgeai},
+  year={2023}
+}
+```
+
+```
+@misc{mmyolo2022,
+    title={{MMYOLO: OpenMMLab YOLO} series toolbox and benchmark},
+    author={MMYOLO Contributors},
+    howpublished = {\url{https://github.com/open-mmlab/mmyolo}},
+    year={2022}
+}
+```
+
+## References
+[1] MMYOLO: https://github.com/open-mmlab/mmyolo
+
+
+<hr>
+<hr>
+
+
+# Original MMYOLO Documentation
+
 <div align="center">
   <img width="100%" src="https://user-images.githubusercontent.com/27466624/222385101-516e551c-49f5-480d-a135-4b24ee6dc308.png"/>
   <div>&nbsp;</div>

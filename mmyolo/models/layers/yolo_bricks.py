@@ -780,7 +780,7 @@ class MaxPoolAndStrideConvBlock(BaseModule):
             else out_channels // 2
 
         self.maxpool_branches = nn.Sequential(
-            MaxPool2d(
+            nn.MaxPool2d(
                 kernel_size=maxpool_kernel_sizes, stride=maxpool_kernel_sizes),
             ConvModule(
                 in_channels,
@@ -1505,9 +1505,18 @@ class CSPLayerWithTwoConv(BaseModule):
     def forward(self, x: Tensor) -> Tensor:
         """Forward process."""
         x_main = self.main_conv(x)
-        x_main = list(x_main.split((self.mid_channels, self.mid_channels), 1))
-        x_main.extend(blocks(x_main[-1]) for blocks in self.blocks)
-        return self.final_conv(torch.cat(x_main, 1))
+        ## original code
+        # x_main = list(x_main.split((self.mid_channels, self.mid_channels), 1))
+        # x_main.extend(blocks(x_main[-1]) for blocks in self.blocks)
+        ## Modified code
+        first_half, second_half = x_main.split((self.mid_channels, self.mid_channels), 1)
+        out = [first_half,second_half]
+        last_block = second_half
+        for block in self.blocks:
+            last_block = block(last_block)
+            out.append(last_block)
+        
+        return self.final_conv(torch.cat(out, 1))
 
 
 class BiFusion(nn.Module):

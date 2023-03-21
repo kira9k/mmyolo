@@ -158,13 +158,28 @@ class YOLOXHeadModule(BaseModule):
         Returns:
             Tuple[List]: A tuple of multi-level classification scores, bbox
             predictions, and objectnesses.
-        """
 
-        return multi_apply(self.forward_single, x, self.multi_level_cls_convs,
-                           self.multi_level_reg_convs,
-                           self.multi_level_conv_cls,
-                           self.multi_level_conv_reg,
-                           self.multi_level_conv_obj)
+        Using multi_apply fails with fx based transformation. This simplification from 'forward' to 'forward_without_multi_apply'
+        is done to ensure that the model can be transformed with pytorch's fx based transformations.
+        """
+        outs = ([], [], [])
+        for level_index in range(len(self.featmap_strides)):
+            cls_score, bbox_pred, objectness =  \
+                self. forward_single( x[level_index], self.multi_level_cls_convs[level_index],
+                                      self.multi_level_reg_convs[level_index],
+                                      self.multi_level_conv_cls[level_index],
+                                      self.multi_level_conv_reg[level_index],
+                                      self.multi_level_conv_obj[level_index])
+            outs[0].append(cls_score)
+            outs[1].append(bbox_pred)
+            outs[2].append(objectness)
+
+        # ref_outs =  multi_apply(self.forward_single, x, self.multi_level_cls_convs,
+        #                    self.multi_level_reg_convs,
+        #                    self.multi_level_conv_cls,
+        #                    self.multi_level_conv_reg,
+        #                    self.multi_level_conv_obj)
+        return outs
 
     def forward_single(self, x: Tensor, cls_convs: nn.Module,
                        reg_convs: nn.Module, conv_cls: nn.Module,

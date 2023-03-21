@@ -215,6 +215,7 @@ class YOLOv5Head(BaseDenseHead):
         self.near_neighbor_thr = near_neighbor_thr
         self.obj_level_weights = obj_level_weights
         self.ignore_iof_thr = ignore_iof_thr
+        self.objectness = True
 
         self.special_init()
 
@@ -315,6 +316,7 @@ class YOLOv5Head(BaseDenseHead):
               the last dimension 4 arrange as (x1, y1, x2, y2).
         """
         assert len(cls_scores) == len(bbox_preds)
+        objectnesses = None if not self.objectness else objectnesses
         if objectnesses is None:
             with_objectnesses = False
         else:
@@ -353,6 +355,16 @@ class YOLOv5Head(BaseDenseHead):
                                                   self.num_classes)
             for cls_score in cls_scores
         ]
+        if hasattr(self.head_module, 'reg_max'):
+            if self.head_module.reg_max > 1:
+                for scale_idx , _ in enumerate(bbox_preds):
+                    b, _, h, w = bbox_preds[scale_idx].shape
+                    bbox_preds[scale_idx] = bbox_preds[scale_idx].reshape(
+                        [-1, 4, self.head_module.reg_max, h * w]).permute(0, 3, 1, 2)
+                    bbox_preds[scale_idx] = bbox_preds[scale_idx].softmax(3).matmul(
+                        self.head_module.proj.view([-1, 1])).squeeze(-1)
+                    bbox_preds[scale_idx] = bbox_preds[scale_idx].transpose(1, 2).reshape(b, -1, h, w)
+
         flatten_bbox_preds = [
             bbox_pred.permute(0, 2, 3, 1).reshape(num_imgs, -1, 4)
             for bbox_pred in bbox_preds

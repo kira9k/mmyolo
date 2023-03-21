@@ -144,6 +144,7 @@ class BaseYOLONeck(BaseModule, metaclass=ABCMeta):
                  **kwargs):
         super().__init__(init_cfg)
         self.in_channels = in_channels
+        self.num_in_channels = len(in_channels)
         self.out_channels = out_channels
         self.deepen_factor = deepen_factor
         self.widen_factor = widen_factor
@@ -221,7 +222,7 @@ class BaseYOLONeck(BaseModule, metaclass=ABCMeta):
 
     def forward(self, inputs: List[torch.Tensor]) -> tuple:
         """Forward function."""
-        assert len(inputs) == len(self.in_channels)
+        #assert len(inputs) == len(self.in_channels)
         # reduce layers
         reduce_outs = []
         for idx in range(len(self.in_channels)):

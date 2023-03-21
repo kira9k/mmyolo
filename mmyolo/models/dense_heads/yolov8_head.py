@@ -152,16 +152,35 @@ class YOLOv8HeadModule(BaseModule):
             Tuple[List]: A tuple of multi-level classification scores, bbox
             predictions
         """
-        assert len(x) == self.num_levels
-        return multi_apply(self.forward_single, x, self.cls_preds,
-                           self.reg_preds)
+        # assert len(x) == self.num_levels
+        # return multi_apply(self.forward_single, x, self.cls_preds,
+        #                    self.reg_preds)
+        if self.training:
+            outs = ([], [], [])
+        else:
+            outs = ([], [])
+        for level_index in range(len(self.featmap_strides)):
+            if self.training:
+                cls_logit, bbox_preds, bbox_dist_preds =  \
+                    self. forward_single(x[level_index], self.cls_preds[level_index],
+                                          self.reg_preds[level_index])
+                outs[0].append(cls_logit)
+                outs[1].append(bbox_preds)
+                outs[2].append(bbox_dist_preds)
+            else:
+                cls_logit, bbox_preds =  \
+                    self. forward_single(x[level_index], self.cls_preds[level_index],
+                                          self.reg_preds[level_index])
+                outs[0].append(cls_logit)
+                outs[1].append(bbox_preds)
+        return outs
 
     def forward_single(self, x: torch.Tensor, cls_pred: nn.ModuleList,
                        reg_pred: nn.ModuleList) -> Tuple:
         """Forward feature of a single scale level."""
         b, _, h, w = x.shape
         cls_logit = cls_pred(x)
-        bbox_dist_preds = reg_pred(x)
+        bbox_dist_preds = bbox_dist_preds_ = reg_pred(x)
         if self.reg_max > 1:
             bbox_dist_preds = bbox_dist_preds.reshape(
                 [-1, 4, self.reg_max, h * w]).permute(0, 3, 1, 2)
@@ -177,7 +196,7 @@ class YOLOv8HeadModule(BaseModule):
         if self.training:
             return cls_logit, bbox_preds, bbox_dist_preds
         else:
-            return cls_logit, bbox_preds
+            return cls_logit, bbox_dist_preds_
 
 
 @MODELS.register_module()
@@ -240,6 +259,7 @@ class YOLOv8Head(YOLOv5Head):
         self.loss_dfl = MODELS.build(loss_dfl)
         # YOLOv8 doesn't need loss_obj
         self.loss_obj = None
+        self.objectness = False
 
     def special_init(self):
         """Since YOLO series algorithms will inherit from YOLOv5Head, but

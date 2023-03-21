@@ -21,7 +21,7 @@ persistent_workers = True
 # -----train val related-----
 # Base learning rate for optim_wrapper. Corresponding to 8xb16=64 bs
 base_lr = 0.01
-max_epochs = 500  # Maximum training epochs
+max_epochs = 500 # Maximum training epochs
 # Disable mosaic augmentation for final 10 epochs (stage 2)
 close_mosaic_epochs = 10
 

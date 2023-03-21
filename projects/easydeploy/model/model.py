@@ -11,7 +11,7 @@ from mmengine.config import ConfigDict
 from torch import Tensor
 
 from mmyolo.models import RepVGGBlock
-from mmyolo.models.dense_heads import (PPYOLOEHead, RTMDetHead, YOLOv5Head,
+from mmyolo.models.dense_heads import (PPYOLOEHead, RTMDetHead, YOLOv5Head, YOLOv6Head,
                                        YOLOv7Head, YOLOv8Head, YOLOXHead)
 from mmyolo.models.layers import ImplicitA, ImplicitM
 from ..backbone import DeployFocus, GConvFocus, NcnnFocus
@@ -42,6 +42,7 @@ class DeployModel(nn.Module):
             self.keep_top_k = postprocess_cfg.get('keep_top_k', 100)
             self.iou_threshold = postprocess_cfg.get('iou_threshold', 0.65)
             self.score_threshold = postprocess_cfg.get('score_threshold', 0.25)
+            self.export_type = postprocess_cfg.get('export_type', None)
         self.__switch_deploy()
 
     def __init_sub_attributes(self):
@@ -115,6 +116,38 @@ class DeployModel(nn.Module):
                     featmap_sizes, self.featmap_strides)
         ]
         flatten_stride = torch.cat(mlvl_strides)
+        if torch.onnx.is_in_onnx_export() and isinstance(self.baseHead, (YOLOv8Head, YOLOXHead, YOLOv6Head)):
+            num_scales = len(cls_scores)
+            scale_outputs = []
+            for _, scale_id in enumerate(range(num_scales)):
+                if objectnesses is not None:
+                    scale_output = torch.cat([bbox_preds[scale_id],
+                                              objectnesses[scale_id],
+                                              cls_scores[scale_id]], axis=1)
+                else:
+                    scale_output = torch.cat([bbox_preds[scale_id],
+                                              cls_scores[scale_id]], axis=1)
+                scale_outputs.append(scale_output)
+            num_elements_per_box = bbox_preds[0].shape[1]
+            bbox_preds = []
+            objectnesses = [] if objectnesses is not None else None
+            cls_scores = []
+            for _, scale_id in enumerate(range(num_scales)):
+                bbox_preds.append(scale_outputs[scale_id][:, :num_elements_per_box, ...])
+                if objectnesses is not None:
+                    objectnesses.append(scale_outputs[scale_id][:, num_elements_per_box:num_elements_per_box+1, ...])
+                    cls_scores.append(scale_outputs[scale_id][:, num_elements_per_box+1:, ...])
+                else:
+                    cls_scores.append(scale_outputs[scale_id][:, num_elements_per_box:, ...])
+
+        if isinstance(self.baseHead, YOLOv8Head):
+            for scale_idx, _ in enumerate(bbox_preds):
+                b, _, h, w = cls_scores[scale_idx].shape
+                bbox_preds[scale_idx] = bbox_preds[scale_idx].reshape(
+                        [-1, 4, self.baseHead.head_module.reg_max, h * w]).permute(0, 3, 1, 2)
+                bbox_preds[scale_idx] = bbox_preds[scale_idx].softmax(3).matmul(
+                    self.baseHead.head_module.proj.view([-1, 1])).squeeze(-1)
+                bbox_preds[scale_idx] = bbox_preds[scale_idx].transpose(1, 2).reshape(b, -1, h, w)
 
         # flatten cls_scores, bbox_preds and objectness
         flatten_cls_scores = [
@@ -144,7 +177,7 @@ class DeployModel(nn.Module):
                               flatten_stride)
 
         return nms_func(bboxes, scores, self.keep_top_k, self.iou_threshold,
-                        self.score_threshold, self.pre_top_k, self.keep_top_k)
+                        self.score_threshold, self.pre_top_k, self.keep_top_k, export_type=self.export_type)
 
     def select_nms(self):
         if self.backend in (MMYOLOBackend.ONNXRUNTIME, MMYOLOBackend.OPENVINO):

@@ -11,7 +11,8 @@ def select_nms_index(scores: Tensor,
                      boxes: Tensor,
                      nms_index: Tensor,
                      batch_size: int,
-                     keep_top_k: int = -1):
+                     keep_top_k: int = -1,
+                     export_type: str = None):
     batch_inds, cls_inds = nms_index[:, 0], nms_index[:, 1]
     box_inds = nms_index[:, 2]
 
@@ -44,11 +45,17 @@ def select_nms_index(scores: Tensor,
         device=topk_inds.device).view(-1, 1)
     batched_dets = batched_dets[topk_batch_inds, topk_inds, ...]
     batched_labels = batched_labels[topk_batch_inds, topk_inds, ...]
-    batched_dets, batched_scores = batched_dets.split([4, 1], 2)
-    batched_scores = batched_scores.squeeze(-1)
 
-    num_dets = (batched_scores > 0).sum(1, keepdim=True)
-    return num_dets, batched_dets, batched_scores, batched_labels
+    if export_type == 'YOLOv5':
+        num_dets = (batched_dets> 0).sum(1, keepdim=True)
+        return num_dets, batched_dets, batched_labels
+    else:
+        batched_dets, batched_scores = batched_dets.split([4, 1], 2)
+        batched_scores = batched_scores.squeeze(-1)
+        num_dets = (batched_scores > 0).sum(1, keepdim=True)
+        return num_dets, batched_dets, batched_scores, batched_labels
+
+
 
 
 class ONNXNMSop(torch.autograd.Function):
@@ -64,7 +71,7 @@ class ONNXNMSop(torch.autograd.Function):
     ) -> Tensor:
         device = boxes.device
         batch = scores.shape[0]
-        num_det = 20
+        num_det = 100
         batches = torch.randint(0, batch, (num_det, )).sort()[0].to(device)
         idxs = torch.arange(100, 100 + num_det).to(device)
         zeros = torch.zeros((num_det, ), dtype=torch.int64).to(device)
@@ -102,6 +109,7 @@ def onnx_nms(
     pre_top_k: int = -1,
     keep_top_k: int = 100,
     box_coding: int = 0,
+    export_type: str = None
 ):
     max_output_boxes_per_class = torch.tensor([max_output_boxes_per_class])
     iou_threshold = torch.tensor([iou_threshold])
@@ -115,8 +123,18 @@ def onnx_nms(
                                        max_output_boxes_per_class,
                                        iou_threshold, score_threshold)
 
-    num_dets, batched_dets, batched_scores, batched_labels = select_nms_index(
-        scores, boxes, selected_indices, batch_size, keep_top_k=keep_top_k)
+    if export_type == 'YOLOv5':
+        num_dets, batched_dets, batched_labels = select_nms_index(
+            scores, boxes, selected_indices, batch_size, keep_top_k=keep_top_k, export_type=export_type)
+        batched_labels = batched_labels.to(torch.int32)
+        batched_labels = batched_labels[:,:,None]
+        return torch.cat((batched_dets,batched_labels),dim=-1)
+    elif export_type == 'MMDetection':
+        num_dets, batched_dets, batched_scores, batched_labels = select_nms_index(
+            scores, boxes, selected_indices, batch_size, keep_top_k=keep_top_k, export_type=export_type)
+        return torch.cat((batched_dets, batched_scores[...,None]), dim=-1), batched_labels.to(torch.int32)
+    else:
+        num_dets, batched_dets, batched_scores, batched_labels = select_nms_index(
+            scores, boxes, selected_indices, batch_size, keep_top_k=keep_top_k, export_type=export_type)
+        return num_dets, batched_dets, batched_scores, batched_labels.to(torch.int32)
 
-    return num_dets, batched_dets, batched_scores, batched_labels.to(
-        torch.int32)

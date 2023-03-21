@@ -8,10 +8,13 @@ from mmdet.utils import setup_cache_size_limit_of_dynamo
 from mmengine.config import Config, ConfigDict, DictAction
 from mmengine.evaluator import DumpResults
 from mmengine.runner import Runner
+from mmengine.model import is_model_wrapper
+from mmyolo.models.dense_heads import YOLOv5HeadModule, YOLOv7HeadModule, YOLOv6HeadModule, YOLOv8HeadModule
 
 from mmyolo.registry import RUNNERS
 from mmyolo.utils import is_metainfo_lower
 
+from edgeai_torchmodelopt import xmodelopt
 
 # TODO: support fuse_conv_bn
 def parse_args():
@@ -19,6 +22,11 @@ def parse_args():
         description='MMYOLO test (and eval) a model')
     parser.add_argument('config', help='test config file path')
     parser.add_argument('checkpoint', help='checkpoint file')
+    parser.add_argument(
+        '--model-surgery',
+        type=int,
+        default=0,
+        help='create lite version of a model by applying a set of fx based transformations on the model')
     parser.add_argument(
         '--work-dir',
         help='the directory to save the file containing evaluation metrics')
@@ -149,8 +157,33 @@ def main():
             'The dump file must be a pkl file.'
         runner.test_evaluator.metrics.append(
             DumpResults(out_file_path=args.out))
+    if args.model_surgery:
+        surgery_fn = xmodelopt.surgery.v1.convert_to_lite_model if args.model_surgery == 1 \
+                     else (xmodelopt.surgery.v2.convert_to_lite_fx if args.model_surgery == 2 else None)
+        runner.model.eval()
+        if is_model_wrapper(runner.model):
+            runner.model = runner.model.module
+        # start testing
+        runner.model.backbone = surgery_fn(runner.model.backbone)
+        runner.model.neck = surgery_fn(runner.model.neck)
 
-    # start testing
+        # Only head_module of head goes through model_surgery as it contains all compute layers
+        if not isinstance(runner.model.bbox_head.head_module, (YOLOv5HeadModule, YOLOv7HeadModule, YOLOv8HeadModule, YOLOv6HeadModule)):
+            runner.model.bbox_head.head_module = \
+                surgery_fn(runner.model.bbox_head.head_module)
+            if hasattr(runner.model.bbox_head.head_module, 'reg_max') and hasattr(runner.model.bbox_head.head_module, 'proj'):
+                    reg_max = runner.model.bbox_head.head_module.reg_max
+                    proj = runner.model.bbox_head.head_module.proj
+            else:
+                    reg_max = None
+                    proj = None
+            if reg_max is not None and proj is not None:
+                runner.model.bbox_head.head_module.reg_max = reg_max
+                runner.model.bbox_head.head_module.proj = proj
+        elif isinstance(runner.model.bbox_head.head_module, (YOLOv8HeadModule, YOLOv6HeadModule)):
+            runner.model.bbox_head.head_module = xmodelopt.surgery.v1.convert_to_lite_model(runner.model.bbox_head.head_module)
+        runner.model = runner.wrap_model(runner.cfg.get('model_wrapper_cfg'), runner.model)
+    print("\n\n model summary : \n",runner.model)   
     runner.test()
 
 
