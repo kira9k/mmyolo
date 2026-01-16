@@ -2,7 +2,7 @@ _base_ = ['../_base_/default_runtime.py', '../_base_/det_p5_tta.py']
 
 # ========================Frequently modified parameters======================
 # -----data related-----
-data_root = 'data/coco/'  # Root path of data
+data_root = 'data/nnorm_person/'  # Root path of data
 # Path of train annotation file
 train_ann_file = 'annotations/instances_train2017.json'
 train_data_prefix = 'train2017/'  # Prefix of train image path
@@ -10,7 +10,7 @@ train_data_prefix = 'train2017/'  # Prefix of train image path
 val_ann_file = 'annotations/instances_val2017.json'
 val_data_prefix = 'val2017/'  # Prefix of val image path
 
-num_classes = 80  # Number of classes for classification
+num_classes = 1  # Number of classes for classification
 # Batch size of a single GPU during training
 train_batch_size_per_gpu = 16
 # Worker to pre-fetch data for each single GPU during training
@@ -233,7 +233,8 @@ train_dataloader = dict(
     sampler=dict(type='DefaultSampler', shuffle=True),
     collate_fn=dict(type='yolov5_collate'),  # FASTER
     dataset=dict(
-        type=dataset_type,
+    type=dataset_type,
+    metainfo=dict(classes=('human',)),
         data_root=data_root,
         ann_file=train_ann_file,
         data_prefix=dict(img=train_data_prefix),
@@ -263,7 +264,8 @@ val_dataloader = dict(
     drop_last=False,
     sampler=dict(type='DefaultSampler', shuffle=False),
     dataset=dict(
-        type=dataset_type,
+    type=dataset_type,
+    metainfo=dict(classes=('human',)),
         data_root=data_root,
         test_mode=True,
         data_prefix=dict(img=val_data_prefix),

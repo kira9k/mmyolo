@@ -1,8 +1,8 @@
 _base_ = 'yolov5_s-v61_syncbn_fast_8xb16-300e_coco.py'
 
 # ========================modified parameters======================
-img_scale = (1280, 1280)  # width, height
-num_classes = 80  # Number of classes for classification
+img_scale = (640, 640)  # width, height
+num_classes = 1  # Number of classes for classification
 # Config of batch shapes. Only on val.
 # It means not used if batch_shapes_cfg is None.
 batch_shapes_cfg = dict(
@@ -81,7 +81,7 @@ train_pipeline = [
                    'flip_direction'))
 ]
 
-train_dataloader = dict(dataset=dict(pipeline=train_pipeline))
+train_dataloader = dict(dataset=dict(pipeline=train_pipeline, metainfo=dict(classes=('human',))))
 
 test_pipeline = [
     dict(type='LoadImageFromFile', backend_args=_base_.backend_args),
@@ -99,7 +99,7 @@ test_pipeline = [
 ]
 
 val_dataloader = dict(
-    dataset=dict(pipeline=test_pipeline, batch_shapes_cfg=batch_shapes_cfg))
+    dataset=dict(pipeline=test_pipeline, batch_shapes_cfg=batch_shapes_cfg,metainfo=dict(classes=('human',))))
 
 test_dataloader = val_dataloader
 

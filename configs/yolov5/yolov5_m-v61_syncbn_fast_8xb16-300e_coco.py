@@ -75,5 +75,5 @@ train_pipeline = [
                    'flip_direction'))
 ]
 
-train_dataloader = dict(dataset=dict(pipeline=train_pipeline))
+train_dataloader = dict(dataset=dict(pipeline=train_pipeline, metainfo=dict(classes=('human',))))
 default_hooks = dict(param_scheduler=dict(lr_factor=lr_factor))

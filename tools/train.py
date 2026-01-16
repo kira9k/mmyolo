@@ -148,6 +148,29 @@ def main():
             runner.model.bbox_head.head_module = xmodelopt.surgery.v1.convert_to_lite_model(runner.model.bbox_head.head_module)
         runner.model = runner.wrap_model(runner.cfg.get('model_wrapper_cfg'), runner.model)
     print("\n\n model summary : \n",runner.model)
+
+    # === Diagnostic check: verify backbone is frozen and BN not updating ===
+    try:
+        model = runner.model.module if is_model_wrapper(runner.model) else runner.model
+        # Check requires_grad for backbone params
+        total_backbone = 0
+        trainable_backbone = 0
+        for name, p in model.named_parameters():
+            if name.startswith('backbone') or '.backbone.' or name.startswith('neck') or '.neck.'in name:
+                total_backbone += p.numel()
+                if p.requires_grad:
+                    trainable_backbone += p.numel()
+                print(f"{name}: requires_grad={p.requires_grad}")
+        print(f"Backbone total params: {total_backbone}, trainable params in backbone: {trainable_backbone}")
+
+        # Check BatchNorm modules in backbone for training flag
+        import torch.nn as nn
+        bn_modules = [m for m in model.backbone.modules() if isinstance(m, (nn.BatchNorm1d, nn.BatchNorm2d, nn.SyncBatchNorm))]
+        bn_training = sum(1 for m in bn_modules if m.training)
+        print(f"Total BN modules in backbone: {len(bn_modules)}, BN modules with training=True: {bn_training}")
+    except Exception as e:
+        print('Diagnostic check failed:', e)
+
     runner.train()
 
 

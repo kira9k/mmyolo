@@ -2,21 +2,26 @@ _base_ = ['../_base_/default_runtime.py', '../_base_/det_p5_tta.py']
 
 # ========================Frequently modified parameters======================
 # -----data related-----
-data_root = 'data/coco/'  # Root path of data
+data_root = 'data/train_val_2/'  # Root path of data
+data_root_test = 'data/test_data/'  # Root path of data for testing
 # Path of train annotation file
-train_ann_file = 'annotations/instances_train2017.json'
-train_data_prefix = 'train2017/'  # Prefix of train image path
+train_ann_file = 'train/ann.json'
+train_data_prefix = 'train/images'  # Prefix of train image path
 # Path of val annotation file
-val_ann_file = 'annotations/instances_val2017.json'
-val_data_prefix = 'val2017/'  # Prefix of val image path
-
-num_classes = 80  # Number of classes for classification
+val_ann_file = 'val/ann.json'
+val_data_prefix = 'val/images'  # Prefix of val image path
+test_ann_file = 'vid16_test/ann.json'
+test_data_prefix = 'vid16_test/images'
+num_classes = 1  # Number of classes for classification
 # Batch size of a single GPU during training
 train_batch_size_per_gpu = 16
 # Worker to pre-fetch data for each single GPU during training
 train_num_workers = 8
 # persistent_workers must be False if num_workers is 0
 persistent_workers = True
+
+##FINE-tune from a pretrained model.
+#load_from = '/home/kira9k/ieos/mmyolo/work_dirs/yolov8_s_big_dataset_2/best_coco_bbox_mAP_epoch_210.pth'
 
 # -----train val related-----
 # Base learning rate for optim_wrapper. Corresponding to 8xb16=64 bs
@@ -27,7 +32,7 @@ close_mosaic_epochs = 10
 
 model_test_cfg = dict(
     # The config of multi-label for multi-class prediction.
-    multi_label=True,
+    multi_label=False,
     # The number of boxes before NMS
     nms_pre=30000,
     score_thr=0.001,  # Threshold to filter out boxes.
@@ -100,7 +105,7 @@ model = dict(
     data_preprocessor=dict(
         type='YOLOv5DetDataPreprocessor',
         mean=[0., 0., 0.],
-        std=[255., 255., 255.],
+        std = [1., 1., 1.],#std=[255., 255., 255.],
         bgr_to_rgb=True),
     backbone=dict(
         type='YOLOv8CSPDarknet',
@@ -238,6 +243,7 @@ train_dataloader = dict(
     collate_fn=dict(type='yolov5_collate'),
     dataset=dict(
         type=dataset_type,
+        metainfo=dict(classes=('human',)),
         data_root=data_root,
         ann_file=train_ann_file,
         data_prefix=dict(img=train_data_prefix),
@@ -268,6 +274,7 @@ val_dataloader = dict(
     sampler=dict(type='DefaultSampler', shuffle=False),
     dataset=dict(
         type=dataset_type,
+        metainfo=dict(classes=('human',)),
         data_root=data_root,
         test_mode=True,
         data_prefix=dict(img=val_data_prefix),
@@ -275,7 +282,24 @@ val_dataloader = dict(
         pipeline=test_pipeline,
         batch_shapes_cfg=batch_shapes_cfg))
 
-test_dataloader = val_dataloader
+test_dataloader = dict(
+    batch_size=val_batch_size_per_gpu,
+    num_workers=val_num_workers,
+    persistent_workers=persistent_workers,
+    pin_memory=True,
+    drop_last=False,
+    sampler=dict(type='DefaultSampler', shuffle=False),
+    dataset=dict(
+        type=dataset_type,
+        metainfo=dict(classes=('human',)),
+        data_root=data_root_test,
+        test_mode=True,
+        data_prefix=dict(img=test_data_prefix),
+        ann_file=test_ann_file,
+        pipeline=test_pipeline,
+        batch_shapes_cfg=batch_shapes_cfg))
+
+#test_dataloader = val_dataloader
 
 param_scheduler = None
 optim_wrapper = dict(
@@ -321,7 +345,14 @@ val_evaluator = dict(
     proposal_nums=(100, 1, 10),
     ann_file=data_root + val_ann_file,
     metric='bbox')
-test_evaluator = val_evaluator
+#test_evaluator = val_evaluator
+
+test_evaluator = dict(
+    type='mmdet.CocoMetric',
+    proposal_nums=(100, 1, 10),
+    ann_file=data_root_test + test_ann_file,   # ← важно указать именно тестовый ann.json
+    metric='bbox'
+)
 
 train_cfg = dict(
     type='EpochBasedTrainLoop',

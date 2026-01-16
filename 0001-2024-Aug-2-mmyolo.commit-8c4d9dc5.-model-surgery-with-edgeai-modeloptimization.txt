@@ -1,0 +1,3484 @@
+From e18b8e71dafb52efacb325a7d33045e12f5a7a88 Mon Sep 17 00:00:00 2001
+From: Debapriya Maji <d-maji@ti.com>
+Date: Tue, 21 Mar 2023 11:05:55 +0530
+Subject: [PATCH] Enabled YOLOv5-ti-lite models training in mmyolo.
+
+Make the following chnages to enable fx based surgery for YOLOv7 and YOLOX models:
+1. replace mmcv.cnn.MaxPool with nn.MaxPool
+2. Added surgery in the head module: model.bbox_head.head_module
+3. Using a loop in the YOLOX forward function instead of applying multi_apply in the YOLOX forward function.
+
+Added support for exporting of YOLOX and YOLOv6 based models based on model surgery.
+
+Took care of changes in model-surgery.
+
+Made suitable changes to enable fx based surgery for
+YOLOv8 and YOLOv6 head.
+
+Bug fixes in YOLOv8 head module surgery.
+
+Enabled weights intialization before model surgery. This is required as
+weights intialization functionality is lost after the surgery.
+
+Added objectness flag in YOLOv5 and YOLOv8 Head to create distinction after
+model surgery.
+
+Export changes required for TIDL
+
+Reformatted ONNX export as to be supported by TIDL.
+
+Added support for prototxt export for YOLOv5, YOLOX, YOLOv6, YOLOv7, YOLOv8.
+
+--export-type option added to output in MMDetection style (dets, labels)
+
+using the latest edgeai-modeltoolkit for model surgery
+
+model surgery types 1 and 2 are supported
+
+model-surgery for export - fixes
+
+onnx export is working now
+
+export_type for YOLOv5 and YOLOv7 models
+
+output name for yolov5 when export type is none
+
+export code updated
+
+onnx export for yolov8
+
+bug fix for training yolov6
+
+updated documentation
+
+updated readme
+
+readme doc updated
+
+reverting yolov6 to using the original multi_aply
+
+changes to use edgeai-modeloptimization
+
+setup file added
+
+updated model surgery module name
+
+updated readme
+
+updated readme
+
+TI license header updated
+
+added function to generate prototxt for yolov8
+
+setup file update
+
+[Feature] Support TTA (#553)
+
+* support TTA
+
+* update note
+
+model surgery set to 1
+
+Forward function of CSPLayerWithTwoConv changed so that it is supported for model surgery v2
+---
+ LICENSE                                       |   31 +
+ README.md                                     |  187 ++
+ .../yolov8_s_syncbn_fast_8xb16-500e_coco.py   |    2 +-
+ mmyolo/models/dense_heads/yolov5_head.py      |   12 +
+ mmyolo/models/dense_heads/yolov8_head.py      |   30 +-
+ mmyolo/models/dense_heads/yolox_head.py       |   27 +-
+ mmyolo/models/layers/yolo_bricks.py           |   17 +-
+ mmyolo/models/necks/base_yolo_neck.py         |    3 +-
+ mmyolo/utils/__init__.py                      |    3 +-
+ mmyolo/utils/proto/compile_proto.sh           |    1 +
+ mmyolo/utils/proto/mmyolo_meta_arch.proto     |  359 ++++
+ mmyolo/utils/proto/mmyolo_meta_arch_pb2.py    | 1674 +++++++++++++++++
+ mmyolo/utils/save_model.py                    |  332 ++++
+ projects/easydeploy/model/model.py            |   37 +-
+ projects/easydeploy/nms/ort_nms.py            |   38 +-
+ projects/easydeploy/tools/export_onnx.py      |   94 +-
+ setup.sh                                      |   39 +
+ tools/dist_test.sh                            |    2 +-
+ tools/dist_train.sh                           |    2 +-
+ tools/test.py                                 |   37 +-
+ tools/train.py                                |   36 +-
+ 21 files changed, 2921 insertions(+), 42 deletions(-)
+ create mode 100755 mmyolo/utils/proto/compile_proto.sh
+ create mode 100755 mmyolo/utils/proto/mmyolo_meta_arch.proto
+ create mode 100644 mmyolo/utils/proto/mmyolo_meta_arch_pb2.py
+ create mode 100644 mmyolo/utils/save_model.py
+ create mode 100755 setup.sh
+
+diff --git a/LICENSE b/LICENSE
+index f288702..679fd62 100644
+--- a/LICENSE
++++ b/LICENSE
+@@ -1,3 +1,34 @@
++Copyright (c) 2018-2024, Texas Instruments Incorporated
++All Rights Reserved.
++
++Redistribution and use in source and binary forms, with or without
++modification, are permitted provided that the following conditions are met:
++
++* Redistributions of source code must retain the above copyright notice, this
++  list of conditions and the following disclaimer.
++
++* Redistributions in binary form must reproduce the above copyright notice,
++  this list of conditions and the following disclaimer in the documentation
++  and/or other materials provided with the distribution.
++
++* Neither the name of the copyright holder nor the names of its
++  contributors may be used to endorse or promote products derived from
++  this software without specific prior written permission.
++
++THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS"
++AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
++IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE
++DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT HOLDER OR CONTRIBUTORS BE LIABLE
++FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL
++DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR
++SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER
++CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY,
++OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
++OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
++
++----------------------------------------------------------------------
++Obtained from: https://github.com/open-mmlab/mmyolo
++
+                     GNU GENERAL PUBLIC LICENSE
+                        Version 3, 29 June 2007
+ 
+diff --git a/README.md b/README.md
+index b799a75..4444bdb 100644
+--- a/README.md
++++ b/README.md
+@@ -1,3 +1,190 @@
++# EdgeAI-MMYOLO
++
++This repository is a fork of the popular [mmyolo](https://github.com/open-mmlab/mmyolo) open source repository for YOLO based object detection models. MMYOLO is an open source toolbox for YOLO series algorithms based on PyTorch and [MMDetection](https://github.com/open-mmlab/mmdetection). It is a part of the [OpenMMLab](https://openmmlab.com/) project. While mmyolo focuses on a wide variety of models, typically at high complexity, this fork focuses on models that are optimized for speed and accuracy so that they run efficiently on embedded devices. For this purpose, [edgeai-modeloptimization](https://github.com/TexasInstruments/edgeai-modeloptimization) toolkit is used to convert the models to an embedded friendly version.
++
++
++<hr>
++
++
++## Environment
++We have tested this on Ubuntu 22.04 OS and pyenv Python environment manager. Here are the setup instructions.
++
++Make sure that you are using bash shell. If it is not bash shell, change it to bash. Verify it by typing:
++```
++echo ${SHELL}
++```
++
++Install system packages
++```
++sudo apt update
++sudo apt install build-essential curl libbz2-dev libffi-dev liblzma-dev libncursesw5-dev libreadline-dev libsqlite3-dev libssl-dev libxml2-dev libxmlsec1-dev llvm make tk-dev wget xz-utils zlib1g-dev
++```
++
++Install pyenv using the following command.
++```
++curl -L https://github.com/pyenv/pyenv-installer/raw/master/bin/pyenv-installer | bash
++
++echo '# pyenv settings ' >> ${HOME}/.bashrc
++echo 'command -v pyenv >/dev/null || export PATH=":${HOME}/.pyenv/bin:$PATH"' >> ${HOME}/.bashrc
++echo 'eval "$(pyenv init -)"' >> ${HOME}/.bashrc
++echo 'eval "$(pyenv virtualenv-init -)"' >> ${HOME}/.bashrc
++echo '' >> ${HOME}/.bashrc
++
++exec ${SHELL}
++```
++
++Create a Python 3.10 environment if you don't have it and activate it before following the rest of the instructions.
++```
++pyenv install 3.10
++pyenv virtualenv 3.10 edge-mmyolo
++pyenv activate edge-mmyolo
++pip install --upgrade pip setuptools
++```
++
++
++Activation of Python environment - this activation step needs to be done everytime one starts a new terminal or shell. (Alternately, this also can be written to the .bashrc, so that this will be the default penv environment).
++```
++pyenv activate edge-mmyolo
++```
++
++
++## Installation Instructions
++Installation can be done by running:
++```
++setup.sh
++```
++
++For detailed installation instructions refer to [installation instructions](./docs/en/get_started/installation.md)
++
++## Download Dataset
++
++`tools/misc/download_dataset.py` supports downloading datasets such as `COCO`, `VOC`, `LVIS` and `Balloon`.
++
++```shell
++python tools/misc/download_dataset.py --dataset-name coco2017
++```
++
++## Get Started
++
++### Training
++
++Run the below command to start the training, work_dirs/yolov5_n-v61_syncbn_fast_8xb16-300e_coco.py folder will be automatically generated, the checkpoint file and the training config file will be saved in this folder. Make sure to use the proper config file path. The model-surgery flag uses the model optimization toolkit to convert the model to lite version(embedded friendly version).
++```
++python tools/train.py configs/yolov5/yolov5_n-v61_syncbn_fast_8xb16-300e_coco.py --model-surgery 2
++```
++To run the training in multiple GPU in parallel, use the following command
++```
++./tools/dist_train.sh configs/yolov5/yolov5_n-v61_syncbn_fast_8xb16-300e_coco.py {no. of GPUs}
++```
++
++### Testing
++
++Run the following command to get the test accuracy
++```
++python tools/test.py configs/yolov5/yolov5_n-v61_syncbn_fast_8xb16-300e_coco.py work_dirs/yolov5_n-v61_syncbn_fast_8xb16-300e_coco/epoch_40.pth --model-surgery 2 
++```
++To run the test in multiple GPU use the following command
++```
++./tools/dist_test.sh configs/yolov5/yolov5_n-v61_syncbn_fast_8xb16-300e_coco.py work_dirs/yolov5_n-v61_syncbn_fast_8xb16-300e_coco/epoch_40.pth {no. of GPUs}
++```
++###  Export
++
++**Export of ONNX model (.onnx) and additional meta information (.prototxt)** is supported. The .prototxt contains meta information specified by **TIDL** for object detectors. 
++
++This project is developed for easily converting MMYOLO models to other inference backends without the need of MMDeploy, which reduces the cost of both time and effort on getting familiar with MMDeploy.
++
++E.g. for easy deployment :
++
++```
++python projects/easydeploy/tools/export_onnx.py    \
++configs/yolov6/yolov6_n_syncbn_fast_8xb32-400e_coco.py     \
++work_dirs/yolov6_n_syncbn_fast_8xb32-400e_coco/epoch_60.pth    \
++	--work-dir work_dirs/yolov6_n_syncbn_fast_8xb32-400e_coco   \
++	--img-size 640 640   \
++	--batch 1    \
++	--device cpu    \
++	--simplify  \
++	--opset 11      \
++	--pre-topk 1000     \
++	--keep-topk 100      \
++	--iou-threshold 0.65    \
++	--score-threshold 0.25 \
++	--export-type YOLOv5 \
++	--model-surgery 2
++```
++The model-surgery flag uses the model optimization toolkit to convert the model to an embedded friendly version.
++
++For more information please refer to [MMYOLO Easy-Deployment](https://github.com/open-mmlab/mmyolo/blob/main/docs/en/get_started/15_minutes_object_detection.md#easydeploy-deployment)
++
++## Object Detection Model Zoo
++Complexity and Accuracy report of several trained models are reported here. The checkpoints and exported onnx models will be available in https://github.com/TexasInstruments/edgeai-modelzoo-cl
++
++### Models 
++The models are grouped in terms of repositories used to train them or the repositories through they are made available.
++
++
++| Dataset | Original Model    | Lite Model          | Input Size  | Original AP[0.5:0.95]%, AP50% | Lite AP[0.5:0.95]%, AP50% | GigaMACS   | config file | Notes |
++|---------|-------------------|---------------------|-------------|-------------------------------|---------------------------|------------|-----------------------------------------|-------|
++|         | **YOLOv5 models** 
++| COCO    | YOLOv5-nano       | YOLOv5-nano-lite    | 640x640     | 28.0, 45.9                    | **25.2**, 42.1            | **2.07**   | [config](./configs/yolov5/yolov5_n-v61_syncbn_fast_8xb16-300e_coco.py)|       |
++| COCO    | YOLOv5-small      | YOLOv5-small-lite   | 640x640     | 37.7, 57.1                    | **35.5**, 54.7            | **7.89**   | [config](./configs/yolov5/yolov5_s-v61_syncbn_fast_8xb16-300e_coco.py)        |       | 
++|         | **YOLOv7 models** 
++| COCO    | YOLOv7-tiny       | YOLOv7-tiny-lite    | 640x640     | 37.5, 55.8                    | **36.7**, 55.0            | **6.87**   | [config](./configs/yolov7/yolov7_tiny_syncbn_fast_8x16b-300e_coco.py)        |       |
++| COCO    | YOLOv7-large      | YOLOv7-large-lite   | 640x640     | 51.0, 69.0                    | **48.1**, 66.4            | **52.95**  | [config](./configs/yolov7/yolov7_l_syncbn_fast_8x16b-300e_coco.py)        |       |
++|         | **YOLOv8 models** 
++| COCO    | YOLOv8-nano       | YOLOv8-nano-lite    | 640x640     | 37.2, 52.7                    | **34.5**, 49.7            | **-**   | [config](./configs/yolov8/yolov8_n_syncbn_fast_8xb16-500e_coco.py)       |       |
++| COCO    | YOLOv8-small      | YOLOv8-small-lite   | 640x640     | 44.2, 61.0                    | **42.4**, 58.8            | **14.33**  | [config](./configs/yolov8/yolov8_s_syncbn_fast_8xb16-500e_coco.py)       |       |
++|         | **YOLOX models** 
++| COCO    | YOLOX-tiny        | YOLOX-tiny-lite     | 416x416     | 32.7, 50.3                    | **31.1**, 48.4            | **3.25**   | [config](./configs/yolox/yolox_tiny_fast_8xb8-300e_coco.py)      |       |
++| COCO    | YOLOX-small       | YOLOX-small-lite    | 640x640     | 40.7, 59.6                    | **38.7**, 57.4            | **7.85**   | [config](./configs/yolox/yolox_s_fast_8xb8-300e_coco.py)      |       |
++
++
++### Notes
++- GigaMACS: Complexity in Giga Multiply-Accumulations required for inference (lower is better). This is an important metric to watch out for when selecting models for embedded inference.<br>
++- Accuracy for Object Detection on COCO dataset primarily uses two accuracy metrics AP[0.5:0.95] and AP50 (in percentages). AP[0.5:0.95] is the Mean of Average Precision values computed at IOUs ranging from 0.5 to 0.95 and averaged. AP50 is the Average Precision computed at 0.5 IoU. If only one accuracy metric is mentioned in a table cell, then it is AP[0.5:0.95]. Be sure to compare using the same metric when comparing across various detectors or configurations.
++- Input size in the tables (*width x height*) indicates the resolution for the model input. Original input images can be resized to that resolution with preserving the aspect ratio (may need padding) or without preserving the aspect ratio (depending on the flag keep_ratio in config files).<br>
++
++
++
++
++
++## Acknowledgement
++
++This is an open source project that is contributed by researchers and engineers from various institutions. We appreciate all the contributors who implemented their methods or add new features, as well as users who give valuable feedbacks.
++
++
++## Citation
++
++This package/toolbox is an extension of mmyolo (https://github.com/open-mmlab/mmyolo). If you use this repository or benchmark in your research or work, please cite the following:
++
++```
++@article{EdgeAI-MMYOLO,
++  title   = {{EdgeAI-MMYOLO}: An Extension To Open MMLab Detection Toolbox and Benchmark},
++  author  = {Texas Instruments EdgeAI Development Team, edgeai-devkit@list.ti.com},
++  journal = {https://github.com/TexasInstruments/edgeai},
++  year={2023}
++}
++```
++
++```
++@misc{mmyolo2022,
++    title={{MMYOLO: OpenMMLab YOLO} series toolbox and benchmark},
++    author={MMYOLO Contributors},
++    howpublished = {\url{https://github.com/open-mmlab/mmyolo}},
++    year={2022}
++}
++```
++
++## References
++[1] MMYOLO: https://github.com/open-mmlab/mmyolo
++
++
++<hr>
++<hr>
++
++
++# Original MMYOLO Documentation
++
+ <div align="center">
+   <img width="100%" src="https://user-images.githubusercontent.com/27466624/222385101-516e551c-49f5-480d-a135-4b24ee6dc308.png"/>
+   <div>&nbsp;</div>
+diff --git a/configs/yolov8/yolov8_s_syncbn_fast_8xb16-500e_coco.py b/configs/yolov8/yolov8_s_syncbn_fast_8xb16-500e_coco.py
+index 7e4127e..bb86582 100644
+--- a/configs/yolov8/yolov8_s_syncbn_fast_8xb16-500e_coco.py
++++ b/configs/yolov8/yolov8_s_syncbn_fast_8xb16-500e_coco.py
+@@ -21,7 +21,7 @@ persistent_workers = True
+ # -----train val related-----
+ # Base learning rate for optim_wrapper. Corresponding to 8xb16=64 bs
+ base_lr = 0.01
+-max_epochs = 500  # Maximum training epochs
++max_epochs = 500 # Maximum training epochs
+ # Disable mosaic augmentation for final 10 epochs (stage 2)
+ close_mosaic_epochs = 10
+ 
+diff --git a/mmyolo/models/dense_heads/yolov5_head.py b/mmyolo/models/dense_heads/yolov5_head.py
+index fb24617..d88f71b 100644
+--- a/mmyolo/models/dense_heads/yolov5_head.py
++++ b/mmyolo/models/dense_heads/yolov5_head.py
+@@ -215,6 +215,7 @@ class YOLOv5Head(BaseDenseHead):
+         self.near_neighbor_thr = near_neighbor_thr
+         self.obj_level_weights = obj_level_weights
+         self.ignore_iof_thr = ignore_iof_thr
++        self.objectness = True
+ 
+         self.special_init()
+ 
+@@ -315,6 +316,7 @@ class YOLOv5Head(BaseDenseHead):
+               the last dimension 4 arrange as (x1, y1, x2, y2).
+         """
+         assert len(cls_scores) == len(bbox_preds)
++        objectnesses = None if not self.objectness else objectnesses
+         if objectnesses is None:
+             with_objectnesses = False
+         else:
+@@ -353,6 +355,16 @@ class YOLOv5Head(BaseDenseHead):
+                                                   self.num_classes)
+             for cls_score in cls_scores
+         ]
++        if hasattr(self.head_module, 'reg_max'):
++            if self.head_module.reg_max > 1:
++                for scale_idx , _ in enumerate(bbox_preds):
++                    b, _, h, w = bbox_preds[scale_idx].shape
++                    bbox_preds[scale_idx] = bbox_preds[scale_idx].reshape(
++                        [-1, 4, self.head_module.reg_max, h * w]).permute(0, 3, 1, 2)
++                    bbox_preds[scale_idx] = bbox_preds[scale_idx].softmax(3).matmul(
++                        self.head_module.proj.view([-1, 1])).squeeze(-1)
++                    bbox_preds[scale_idx] = bbox_preds[scale_idx].transpose(1, 2).reshape(b, -1, h, w)
++
+         flatten_bbox_preds = [
+             bbox_pred.permute(0, 2, 3, 1).reshape(num_imgs, -1, 4)
+             for bbox_pred in bbox_preds
+diff --git a/mmyolo/models/dense_heads/yolov8_head.py b/mmyolo/models/dense_heads/yolov8_head.py
+index 2920241..1b6f74d 100644
+--- a/mmyolo/models/dense_heads/yolov8_head.py
++++ b/mmyolo/models/dense_heads/yolov8_head.py
+@@ -152,16 +152,35 @@ class YOLOv8HeadModule(BaseModule):
+             Tuple[List]: A tuple of multi-level classification scores, bbox
+             predictions
+         """
+-        assert len(x) == self.num_levels
+-        return multi_apply(self.forward_single, x, self.cls_preds,
+-                           self.reg_preds)
++        # assert len(x) == self.num_levels
++        # return multi_apply(self.forward_single, x, self.cls_preds,
++        #                    self.reg_preds)
++        if self.training:
++            outs = ([], [], [])
++        else:
++            outs = ([], [])
++        for level_index in range(len(self.featmap_strides)):
++            if self.training:
++                cls_logit, bbox_preds, bbox_dist_preds =  \
++                    self. forward_single(x[level_index], self.cls_preds[level_index],
++                                          self.reg_preds[level_index])
++                outs[0].append(cls_logit)
++                outs[1].append(bbox_preds)
++                outs[2].append(bbox_dist_preds)
++            else:
++                cls_logit, bbox_preds =  \
++                    self. forward_single(x[level_index], self.cls_preds[level_index],
++                                          self.reg_preds[level_index])
++                outs[0].append(cls_logit)
++                outs[1].append(bbox_preds)
++        return outs
+ 
+     def forward_single(self, x: torch.Tensor, cls_pred: nn.ModuleList,
+                        reg_pred: nn.ModuleList) -> Tuple:
+         """Forward feature of a single scale level."""
+         b, _, h, w = x.shape
+         cls_logit = cls_pred(x)
+-        bbox_dist_preds = reg_pred(x)
++        bbox_dist_preds = bbox_dist_preds_ = reg_pred(x)
+         if self.reg_max > 1:
+             bbox_dist_preds = bbox_dist_preds.reshape(
+                 [-1, 4, self.reg_max, h * w]).permute(0, 3, 1, 2)
+@@ -177,7 +196,7 @@ class YOLOv8HeadModule(BaseModule):
+         if self.training:
+             return cls_logit, bbox_preds, bbox_dist_preds
+         else:
+-            return cls_logit, bbox_preds
++            return cls_logit, bbox_dist_preds_
+ 
+ 
+ @MODELS.register_module()
+@@ -240,6 +259,7 @@ class YOLOv8Head(YOLOv5Head):
+         self.loss_dfl = MODELS.build(loss_dfl)
+         # YOLOv8 doesn't need loss_obj
+         self.loss_obj = None
++        self.objectness = False
+ 
+     def special_init(self):
+         """Since YOLO series algorithms will inherit from YOLOv5Head, but
+diff --git a/mmyolo/models/dense_heads/yolox_head.py b/mmyolo/models/dense_heads/yolox_head.py
+index a203298..5c8e54b 100644
+--- a/mmyolo/models/dense_heads/yolox_head.py
++++ b/mmyolo/models/dense_heads/yolox_head.py
+@@ -158,13 +158,28 @@ class YOLOXHeadModule(BaseModule):
+         Returns:
+             Tuple[List]: A tuple of multi-level classification scores, bbox
+             predictions, and objectnesses.
+-        """
+ 
+-        return multi_apply(self.forward_single, x, self.multi_level_cls_convs,
+-                           self.multi_level_reg_convs,
+-                           self.multi_level_conv_cls,
+-                           self.multi_level_conv_reg,
+-                           self.multi_level_conv_obj)
++        Using multi_apply fails with fx based transformation. This simplification from 'forward' to 'forward_without_multi_apply'
++        is done to ensure that the model can be transformed with pytorch's fx based transformations.
++        """
++        outs = ([], [], [])
++        for level_index in range(len(self.featmap_strides)):
++            cls_score, bbox_pred, objectness =  \
++                self. forward_single( x[level_index], self.multi_level_cls_convs[level_index],
++                                      self.multi_level_reg_convs[level_index],
++                                      self.multi_level_conv_cls[level_index],
++                                      self.multi_level_conv_reg[level_index],
++                                      self.multi_level_conv_obj[level_index])
++            outs[0].append(cls_score)
++            outs[1].append(bbox_pred)
++            outs[2].append(objectness)
++
++        # ref_outs =  multi_apply(self.forward_single, x, self.multi_level_cls_convs,
++        #                    self.multi_level_reg_convs,
++        #                    self.multi_level_conv_cls,
++        #                    self.multi_level_conv_reg,
++        #                    self.multi_level_conv_obj)
++        return outs
+ 
+     def forward_single(self, x: Tensor, cls_convs: nn.Module,
+                        reg_convs: nn.Module, conv_cls: nn.Module,
+diff --git a/mmyolo/models/layers/yolo_bricks.py b/mmyolo/models/layers/yolo_bricks.py
+index 19175be..4403e5b 100644
+--- a/mmyolo/models/layers/yolo_bricks.py
++++ b/mmyolo/models/layers/yolo_bricks.py
+@@ -780,7 +780,7 @@ class MaxPoolAndStrideConvBlock(BaseModule):
+             else out_channels // 2
+ 
+         self.maxpool_branches = nn.Sequential(
+-            MaxPool2d(
++            nn.MaxPool2d(
+                 kernel_size=maxpool_kernel_sizes, stride=maxpool_kernel_sizes),
+             ConvModule(
+                 in_channels,
+@@ -1505,9 +1505,18 @@ class CSPLayerWithTwoConv(BaseModule):
+     def forward(self, x: Tensor) -> Tensor:
+         """Forward process."""
+         x_main = self.main_conv(x)
+-        x_main = list(x_main.split((self.mid_channels, self.mid_channels), 1))
+-        x_main.extend(blocks(x_main[-1]) for blocks in self.blocks)
+-        return self.final_conv(torch.cat(x_main, 1))
++        ## original code
++        # x_main = list(x_main.split((self.mid_channels, self.mid_channels), 1))
++        # x_main.extend(blocks(x_main[-1]) for blocks in self.blocks)
++        ## Modified code
++        first_half, second_half = x_main.split((self.mid_channels, self.mid_channels), 1)
++        out = [first_half,second_half]
++        last_block = second_half
++        for block in self.blocks:
++            last_block = block(last_block)
++            out.append(last_block)
++        
++        return self.final_conv(torch.cat(out, 1))
+ 
+ 
+ class BiFusion(nn.Module):
+diff --git a/mmyolo/models/necks/base_yolo_neck.py b/mmyolo/models/necks/base_yolo_neck.py
+index 8825b76..3a0d35a 100644
+--- a/mmyolo/models/necks/base_yolo_neck.py
++++ b/mmyolo/models/necks/base_yolo_neck.py
+@@ -144,6 +144,7 @@ class BaseYOLONeck(BaseModule, metaclass=ABCMeta):
+                  **kwargs):
+         super().__init__(init_cfg)
+         self.in_channels = in_channels
++        self.num_in_channels = len(in_channels)
+         self.out_channels = out_channels
+         self.deepen_factor = deepen_factor
+         self.widen_factor = widen_factor
+@@ -221,7 +222,7 @@ class BaseYOLONeck(BaseModule, metaclass=ABCMeta):
+ 
+     def forward(self, inputs: List[torch.Tensor]) -> tuple:
+         """Forward function."""
+-        assert len(inputs) == len(self.in_channels)
++        #assert len(inputs) == len(self.in_channels)
+         # reduce layers
+         reduce_outs = []
+         for idx in range(len(self.in_channels)):
+diff --git a/mmyolo/utils/__init__.py b/mmyolo/utils/__init__.py
+index f4e9684..bb840b5 100644
+--- a/mmyolo/utils/__init__.py
++++ b/mmyolo/utils/__init__.py
+@@ -2,8 +2,9 @@
+ from .collect_env import collect_env
+ from .misc import is_metainfo_lower, switch_to_deploy
+ from .setup_env import register_all_modules
++from . import save_model
+ 
+ __all__ = [
+     'register_all_modules', 'collect_env', 'switch_to_deploy',
+-    'is_metainfo_lower'
++    'is_metainfo_lower', 'save_model'
+ ]
+diff --git a/mmyolo/utils/proto/compile_proto.sh b/mmyolo/utils/proto/compile_proto.sh
+new file mode 100755
+index 0000000..0ed2120
+--- /dev/null
++++ b/mmyolo/utils/proto/compile_proto.sh
+@@ -0,0 +1 @@
++protoc mmyolo_meta_arch.proto --python_out=./
+diff --git a/mmyolo/utils/proto/mmyolo_meta_arch.proto b/mmyolo/utils/proto/mmyolo_meta_arch.proto
+new file mode 100755
+index 0000000..7277da3
+--- /dev/null
++++ b/mmyolo/utils/proto/mmyolo_meta_arch.proto
+@@ -0,0 +1,359 @@
++// Copyright (c) 2018-2020, Texas Instruments
++// All Rights Reserved.
++//
++// Redistribution and use in source and binary forms, with or without
++// modification, are permitted provided that the following conditions are met:
++//
++// * Redistributions of source code must retain the above copyright notice, this
++//   list of conditions and the following disclaimer.
++//
++// * Redistributions in binary form must reproduce the above copyright notice,
++//   this list of conditions and the following disclaimer in the documentation
++//   and/or other materials provided with the distribution.
++//
++// * Neither the name of the copyright holder nor the names of its
++//   contributors may be used to endorse or promote products derived from
++//   this software without specific prior written permission.
++//
++// THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS"
++// AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
++// IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE
++// DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT HOLDER OR CONTRIBUTORS BE LIABLE
++// FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL
++// DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR
++// SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER
++// CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY,
++// OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
++// OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
++
++
++syntax = "proto2";
++
++package tidl_meta_arch;
++
++// Top level configuration for TIDL Meta Architechtures
++message TIDLMetaArch {
++  optional string name = 1;
++  repeated TidlMaCaffeSsd caffe_ssd = 2;
++  repeated TidlMaTfOdApiSsd tf_od_api_ssd = 3;
++  repeated TidlMaSsd tidl_ssd = 4;
++  repeated TidlMaFasterRcnn tidl_faster_rcnn = 5;
++  repeated TidlYoloOd tidl_yolo = 6;
++  repeated TidlMaRetinaNet tidl_retinanet = 7;
++  repeated TidlMa3DOD tidl_3dod = 8;
++}
++
++message TIDLNmsParam {
++  // Threshold to be used in nms.
++  optional float nms_threshold = 1 [default = 0.3];
++  // Maximum number of results to be kept for each class.
++  optional int32 top_k = 2;
++  // Maximum number of results to be kept before NMS across all calsses. Default -1 means it is disabled
++  optional int32 top_k_all_class = 3  [default = -1];
++  // Parameter for adaptive nms.
++  optional float eta = 4 [default = 1.0];
++}
++
++// Encode/decode type.
++enum TIDLBoxCodeType {
++CORNER = 1;
++CENTER_SIZE = 2;
++CORNER_SIZE = 3;
++CENTER_SIZE_EXP = 4;
++CENTER_SIZE_YXHW = 5;
++CODE_TYPE_YOLO_V5 = 6;
++CODE_TYPE_YOLO_X = 7;
++CODE_TYPE_3DOD = 8;
++CODE_TYPE_DIST2BBOX = 9;
++}
++
++enum TIDLScoreConverter {
++IDENTITY = 0;
++SIGMOID = 1;
++SOFTMAX = 2;
++}
++
++
++enum TIDLAnchorDataLayout {
++SEPARATED = 0;
++INTERLEAVED = 1;
++}
++
++// Message that store parameters used by PriorBoxLayer
++message PriorBoxParameter {
++
++  // Minimum box size (in pixels). Required!
++  repeated float min_size = 1;
++  // Maximum box size (in pixels). Required!
++  repeated float max_size = 2;
++  // Various of aspect ratios. Duplicate ratios will be ignored.
++  // If none is provided, we use default ratio 1.
++  repeated float aspect_ratio = 3;
++  // If true, will flip each aspect ratio.
++  // For example, if there is aspect ratio "r",
++  // we will generate aspect ratio "1.0/r" as well.
++  optional bool flip = 4 [default = true];
++  // If true, will clip the prior so that it is within [0, 1]
++  optional bool clip = 5 [default = false];
++  // Variance for adjusting the prior bboxes.
++  repeated float variance = 6;
++  // By default, we calculate img_height, img_width, step_x, step_y based on
++  // bottom[0] (feat) and bottom[1] (img). Unless these values are explicitely
++  // provided.
++  // Explicitly provide the img_size.
++  optional uint32 img_size = 7;
++  // Either img_size or img_h/img_w should be specified; not both.
++  optional uint32 img_h = 8;
++  optional uint32 img_w = 9;
++
++  // Explicitly provide the step size.
++  optional float step = 10;
++  // Either step or step_h/step_w should be specified; not both.
++  optional float step_h = 11;
++  optional float step_w = 12;
++
++  // Offset to the top left corner of each cell.
++  optional float offset = 13 [default = 0.5];
++  optional uint32 num_keypoint = 14 [default = 0];
++}
++
++// Message that store parameters used by PriorBoxLayer
++message PriorBox3DODParameter {
++
++  // box width (in cm) in x direction. Required!
++  repeated float anchor_width = 1;
++  // box height (in cm) in y direction. Required!
++  repeated float anchor_height = 2;
++  // box length (in cm) in z direction. Required!
++  repeated float anchor_length = 3;
++
++  // step in cm for each point in final convolution feature.
++  required float step_x = 4;
++  required float step_y = 5;
++  required float step_z = 6;
++
++  // offset in cm for each point in final convolution feature.
++  required float offset_x = 7;
++  required float offset_y = 8;
++  required float offset_z = 9;
++  required float offset_dir = 10;
++  
++  // rotation in degrees
++  repeated float rotation = 11;
++  
++}
++
++message TIDLOdSaveParams {
++  // Output directory. If not empty, we will save the results.
++  optional string output_directory = 1;
++  // Output name prefix.
++  optional string output_name_prefix = 2;
++  // Output format.
++  //    VOC - PASCAL VOC output format.
++  //    COCO - MS COCO output format.
++  optional string output_format = 3;
++  // If you want to output results, must also provide the following two files.
++  // Otherwise, we will ignore saving results.
++  // label map file.
++  optional string label_map_file = 4;
++  // A file which contains a list of names and sizes with same order
++  // of the input DB. The file is in the following format:
++  //    name height width
++  //    ...
++  optional string name_size_file = 5;
++  // Number of test images. It can be less than the lines specified in
++  // name_size_file. For example, when we only want to evaluate on part
++  // of the test images.
++  optional uint32 num_test_image = 6;
++  // The resize parameter used in saving the data.
++  optional string resize_param = 7;
++}
++
++// Message that store parameters used by DetectionOutputLayer
++message TIDLOdPostProc {
++  // Number of classes to be predicted. Required!
++  optional uint32 num_classes = 1;
++  // If true, bounding box are shared among different classes.
++  optional bool share_location = 2 [default = true];
++  // Background label id. If there is no background class,
++  // set it as -1.
++  optional int32 background_label_id = 3 [default = 0];
++  // Parameters used for non maximum suppression.
++  optional TIDLNmsParam nms_param = 4;
++  // Parameters used for saving detection results.
++  optional TIDLOdSaveParams save_output_param = 5;
++  // Type of coding method for bbox.
++  optional TIDLBoxCodeType code_type = 6 [default = CORNER];
++  // If true, variance is encoded in target; otherwise we need to adjust the
++  // predicted offset accordingly.
++  optional bool variance_encoded_in_target = 8 [default = false];
++  // Number of total bboxes to be kept per image after nms step.
++  // -1 means keeping all bboxes after nms step.
++  optional int32 keep_top_k = 7 [default = -1];
++  // Only consider detections whose confidences are larger than a threshold.
++  // If not provided, consider all boxes.
++  optional float confidence_threshold = 9;
++  // If true, visualize the detection results.
++  optional bool visualize = 10 [default = false];
++  // The threshold used to visualize the detection results.
++  optional float visualize_threshold = 11;
++  // If provided, save outputs to video file.
++  optional string save_file = 12;
++  // Total number of keypoints predicted along with each bounding box.
++  optional uint32 num_keypoint = 13 [default = 0];
++  // If set to 1, there is a confidence term for each keypoint .
++  optional bool keypoint_confidence = 14 [default = false];
++  // code_type to specify supplementary information apart from box and keypoint. E.g. object_pose
++  optional uint32 sub_code_type = 15 [default = 0];
++  // Parameters used for object_pose post-processing.
++  optional TIDLCameraIntrinsicParams camera_intrinsic_params = 16;
++}
++
++// Configuration for one  TIDL SSD HEAD
++message TidlMaSsd {
++  repeated string box_input = 1; // List of input tensors in the same order as prior_box_param
++  repeated string class_input = 2; // List of input tensors in the same order as prior_box_param
++  optional string output = 3; // the name of output tensor
++  optional string name = 4; // the name of the head
++  optional uint32 in_width = 5;
++  optional uint32 in_height = 6;
++  optional TIDLScoreConverter score_converter = 7 [default = SOFTMAX];
++  repeated PriorBoxParameter prior_box_param = 8;
++  optional TIDLOdPostProc detection_output_param = 9;
++  optional TIDLAnchorDataLayout data_layout = 10 [default = SEPARATED];
++}
++
++
++// Configuration for one  Caffe SSD HEAD
++message TidlMaCaffeSsd {
++  repeated string box_input = 1; // List of input tensors in the same order as prior_box_param
++  repeated string class_input = 2; // List of input tensors in the same order as prior_box_param
++  repeated string output = 3; // the name of output tensor
++  optional string name = 4; // the name of the head
++  optional uint32 in_width = 5;
++  optional uint32 in_height = 6;
++  optional TIDLScoreConverter score_converter = 7 [default = SOFTMAX];
++  repeated PriorBoxParameter prior_box_param = 8;
++  optional TIDLOdPostProc detection_output_param = 9;
++  optional TIDLAnchorDataLayout data_layout = 10 [default = SEPARATED];
++  optional string framework = 11;
++}
++
++// Configuration for list of TF OD API SSD heades
++message TidlMaTfOdApiSsd {
++  optional string name = 1;
++}
++
++// Configuration for list of TIDL Faster RCNN heades
++message TidlMaFasterRcnn {
++  optional string name = 1;
++}
++
++//Yolo v2/v3/v4 Box decoding
++/*
++def get_boxes(pred, anchors, classes):
++    grid_size = tf.shape(pred)[1]
++    box_xy, box_wh, object_probability, class_probabilities = tf.split(
++        pred, (2, 2, 1, classes), axis=-1
++    )
++    box_xy = tf.sigmoid(box_xy)
++    object_probability = tf.sigmoid(object_probability)
++    class_probabilities = tf.sigmoid(class_probabilities)
++    pred_box = tf.concat((box_xy, box_wh), axis=-1)
++    grid = tf.meshgrid(tf.range(grid_size), tf.range(grid_size))
++    grid = tf.expand_dims(tf.stack(grid, axis=-1), axis=2)
++    box_xy = (box_xy + tf.cast(grid, tf.float32)) / tf.cast(
++        grid_size, tf.float32
++    )
++    box_wh = tf.exp(box_wh) * anchors
++    box_x1y1 = box_xy - box_wh / 2
++    box_x2y2 = box_xy + box_wh / 2
++    bbox = tf.concat([box_x1y1, box_x2y2], axis=-1)
++    return bbox, object_probability, class_probabilities, pred_box
++ */
++
++// Configuration for one  TidlYoloOd v2/v3/v4
++message TidlYoloOd {
++  repeated TIDLYoloParams yolo_param = 1;
++  required TIDLOdPostProc detection_output_param = 2;
++  required string name = 3;
++  required uint32 in_width = 4;
++  required uint32 in_height = 5;
++  repeated string output = 6;
++  optional string framework = 7;
++}
++
++
++
++
++message TIDLYoloParams {
++  required string input = 1;
++  repeated float anchor_width = 2;
++  repeated float anchor_height = 3;
++}
++
++
++message RetinaNetAnchorParameter {
++  repeated float aspect_ratio = 1;
++  required float octave_base_scale  = 2;
++  required uint32 scales_per_octave = 3;
++}
++
++// Configuration for retinanet
++message TidlMaRetinaNet {
++  repeated string box_input = 1;
++  repeated string class_input = 2;
++  repeated string output = 3;
++  optional string name = 4;
++  required uint32 in_width = 5;
++  required uint32 in_height = 6;
++  optional uint32 anchorbox_order = 16 [default = 0];
++  optional float x_scale = 7 [default = 10.0];
++  optional float y_scale = 8 [default = 10.0];
++  optional float x_offset = 14 [default = 0.0];
++  optional float y_offset = 15 [default = 0.0];
++  optional float width_scale = 9 [default = 5.0];
++  optional float height_scale = 10 [default = 5.0];
++  optional TIDLScoreConverter score_converter = 11 [default = SOFTMAX];
++  required RetinaNetAnchorParameter anchor_param = 12;
++  required TIDLOdPostProc detection_output_param = 13;
++  optional string framework = 17;
++}
++
++// Configuration for one  anchor based 3D OD
++message TidlMa3DOD {
++  repeated string box_input = 1; // List of input tensors in the same order as prior_box_param
++  repeated string class_input = 2; // List of input tensors in the same order as prior_box_param
++  repeated string dir_input = 3; // List of input tensors in the same order as prior_box_param
++  repeated string output = 4; // the name of output tensor
++  optional string name = 5; // the name of the head
++  required float min_x = 6; // voxel level x range
++  required float max_x = 7; // voxel level x range
++  required float min_y = 8; // voxel level y range
++  required float max_y = 9; // voxel level y range
++  required float min_z = 10;// voxel level z range
++  required float max_z = 11;// voxel level z range 
++  required float voxel_size_x = 12;
++  required float voxel_size_y = 13;
++  required float voxel_size_z = 14;  
++  required uint32 max_points_per_voxel = 15;
++  optional TIDLScoreConverter score_converter = 16 [default = SIGMOID];
++  repeated PriorBox3DODParameter prior_box_3dod_param = 17; // repeat this parameter for all the classes
++  optional TIDLOdPostProc detection_output_param = 18;
++  optional TIDLAnchorDataLayout data_layout = 19 [default = SEPARATED];
++}
++
++//Camera Params required for post-processing object-pose
++message TIDLCameraIntrinsicParams {
++  // Focal length along X.
++  optional float fx = 1 [default = 1.0];
++  // Focal length along Y.
++  optional float fy = 2 [default = 1.0];
++  // Principal point along X.
++  optional float px = 3  [default = 0.0];
++  // Principal point along Y.
++  optional float py = 4 [default = 0.0];
++}
++
++
++
+diff --git a/mmyolo/utils/proto/mmyolo_meta_arch_pb2.py b/mmyolo/utils/proto/mmyolo_meta_arch_pb2.py
+new file mode 100644
+index 0000000..65acd84
+--- /dev/null
++++ b/mmyolo/utils/proto/mmyolo_meta_arch_pb2.py
+@@ -0,0 +1,1674 @@
++# -*- coding: utf-8 -*-
++# Generated by the protocol buffer compiler.  DO NOT EDIT!
++# source: mmyolo_meta_arch.proto
++
++from google.protobuf.internal import enum_type_wrapper
++from google.protobuf import descriptor as _descriptor
++from google.protobuf import message as _message
++from google.protobuf import reflection as _reflection
++from google.protobuf import symbol_database as _symbol_database
++# @@protoc_insertion_point(imports)
++
++_sym_db = _symbol_database.Default()
++
++
++
++
++DESCRIPTOR = _descriptor.FileDescriptor(
++  name='mmyolo_meta_arch.proto',
++  package='tidl_meta_arch',
++  syntax='proto2',
++  serialized_options=None,
++  create_key=_descriptor._internal_create_key,
++  serialized_pb=b'\n\x16mmyolo_meta_arch.proto\x12\x0etidl_meta_arch\"\x88\x03\n\x0cTIDLMetaArch\x12\x0c\n\x04name\x18\x01 \x01(\t\x12\x31\n\tcaffe_ssd\x18\x02 \x03(\x0b\x32\x1e.tidl_meta_arch.TidlMaCaffeSsd\x12\x37\n\rtf_od_api_ssd\x18\x03 \x03(\x0b\x32 .tidl_meta_arch.TidlMaTfOdApiSsd\x12+\n\x08tidl_ssd\x18\x04 \x03(\x0b\x32\x19.tidl_meta_arch.TidlMaSsd\x12:\n\x10tidl_faster_rcnn\x18\x05 \x03(\x0b\x32 .tidl_meta_arch.TidlMaFasterRcnn\x12-\n\ttidl_yolo\x18\x06 \x03(\x0b\x32\x1a.tidl_meta_arch.TidlYoloOd\x12\x37\n\x0etidl_retinanet\x18\x07 \x03(\x0b\x32\x1f.tidl_meta_arch.TidlMaRetinaNet\x12-\n\ttidl_3dod\x18\x08 \x03(\x0b\x32\x1a.tidl_meta_arch.TidlMa3DOD\"f\n\x0cTIDLNmsParam\x12\x1a\n\rnms_threshold\x18\x01 \x01(\x02:\x03\x30.3\x12\r\n\x05top_k\x18\x02 \x01(\x05\x12\x1b\n\x0ftop_k_all_class\x18\x03 \x01(\x05:\x02-1\x12\x0e\n\x03\x65ta\x18\x04 \x01(\x02:\x01\x31\"\x94\x02\n\x11PriorBoxParameter\x12\x10\n\x08min_size\x18\x01 \x03(\x02\x12\x10\n\x08max_size\x18\x02 \x03(\x02\x12\x14\n\x0c\x61spect_ratio\x18\x03 \x03(\x02\x12\x12\n\x04\x66lip\x18\x04 \x01(\x08:\x04true\x12\x13\n\x04\x63lip\x18\x05 \x01(\x08:\x05\x66\x61lse\x12\x10\n\x08variance\x18\x06 \x03(\x02\x12\x10\n\x08img_size\x18\x07 \x01(\r\x12\r\n\x05img_h\x18\x08 \x01(\r\x12\r\n\x05img_w\x18\t \x01(\r\x12\x0c\n\x04step\x18\n \x01(\x02\x12\x0e\n\x06step_h\x18\x0b \x01(\x02\x12\x0e\n\x06step_w\x18\x0c \x01(\x02\x12\x13\n\x06offset\x18\r \x01(\x02:\x03\x30.5\x12\x17\n\x0cnum_keypoint\x18\x0e \x01(\r:\x01\x30\"\xe7\x01\n\x15PriorBox3DODParameter\x12\x14\n\x0c\x61nchor_width\x18\x01 \x03(\x02\x12\x15\n\ranchor_height\x18\x02 \x03(\x02\x12\x15\n\ranchor_length\x18\x03 \x03(\x02\x12\x0e\n\x06step_x\x18\x04 \x02(\x02\x12\x0e\n\x06step_y\x18\x05 \x02(\x02\x12\x0e\n\x06step_z\x18\x06 \x02(\x02\x12\x10\n\x08offset_x\x18\x07 \x02(\x02\x12\x10\n\x08offset_y\x18\x08 \x02(\x02\x12\x10\n\x08offset_z\x18\t \x02(\x02\x12\x12\n\noffset_dir\x18\n \x02(\x02\x12\x10\n\x08rotation\x18\x0b \x03(\x02\"\xbd\x01\n\x10TIDLOdSaveParams\x12\x18\n\x10output_directory\x18\x01 \x01(\t\x12\x1a\n\x12output_name_prefix\x18\x02 \x01(\t\x12\x15\n\routput_format\x18\x03 \x01(\t\x12\x16\n\x0elabel_map_file\x18\x04 \x01(\t\x12\x16\n\x0ename_size_file\x18\x05 \x01(\t\x12\x16\n\x0enum_test_image\x18\x06 \x01(\r\x12\x14\n\x0cresize_param\x18\x07 \x01(\t\"\xdb\x04\n\x0eTIDLOdPostProc\x12\x13\n\x0bnum_classes\x18\x01 \x01(\r\x12\x1c\n\x0eshare_location\x18\x02 \x01(\x08:\x04true\x12\x1e\n\x13\x62\x61\x63kground_label_id\x18\x03 \x01(\x05:\x01\x30\x12/\n\tnms_param\x18\x04 \x01(\x0b\x32\x1c.tidl_meta_arch.TIDLNmsParam\x12;\n\x11save_output_param\x18\x05 \x01(\x0b\x32 .tidl_meta_arch.TIDLOdSaveParams\x12:\n\tcode_type\x18\x06 \x01(\x0e\x32\x1f.tidl_meta_arch.TIDLBoxCodeType:\x06\x43ORNER\x12)\n\x1avariance_encoded_in_target\x18\x08 \x01(\x08:\x05\x66\x61lse\x12\x16\n\nkeep_top_k\x18\x07 \x01(\x05:\x02-1\x12\x1c\n\x14\x63onfidence_threshold\x18\t \x01(\x02\x12\x18\n\tvisualize\x18\n \x01(\x08:\x05\x66\x61lse\x12\x1b\n\x13visualize_threshold\x18\x0b \x01(\x02\x12\x11\n\tsave_file\x18\x0c \x01(\t\x12\x17\n\x0cnum_keypoint\x18\r \x01(\r:\x01\x30\x12\"\n\x13keypoint_confidence\x18\x0e \x01(\x08:\x05\x66\x61lse\x12\x18\n\rsub_code_type\x18\x0f \x01(\r:\x01\x30\x12J\n\x17\x63\x61mera_intrinsic_params\x18\x10 \x01(\x0b\x32).tidl_meta_arch.TIDLCameraIntrinsicParams\"\xfe\x02\n\tTidlMaSsd\x12\x11\n\tbox_input\x18\x01 \x03(\t\x12\x13\n\x0b\x63lass_input\x18\x02 \x03(\t\x12\x0e\n\x06output\x18\x03 \x01(\t\x12\x0c\n\x04name\x18\x04 \x01(\t\x12\x10\n\x08in_width\x18\x05 \x01(\r\x12\x11\n\tin_height\x18\x06 \x01(\r\x12\x44\n\x0fscore_converter\x18\x07 \x01(\x0e\x32\".tidl_meta_arch.TIDLScoreConverter:\x07SOFTMAX\x12:\n\x0fprior_box_param\x18\x08 \x03(\x0b\x32!.tidl_meta_arch.PriorBoxParameter\x12>\n\x16\x64\x65tection_output_param\x18\t \x01(\x0b\x32\x1e.tidl_meta_arch.TIDLOdPostProc\x12\x44\n\x0b\x64\x61ta_layout\x18\n \x01(\x0e\x32$.tidl_meta_arch.TIDLAnchorDataLayout:\tSEPARATED\"\x96\x03\n\x0eTidlMaCaffeSsd\x12\x11\n\tbox_input\x18\x01 \x03(\t\x12\x13\n\x0b\x63lass_input\x18\x02 \x03(\t\x12\x0e\n\x06output\x18\x03 \x03(\t\x12\x0c\n\x04name\x18\x04 \x01(\t\x12\x10\n\x08in_width\x18\x05 \x01(\r\x12\x11\n\tin_height\x18\x06 \x01(\r\x12\x44\n\x0fscore_converter\x18\x07 \x01(\x0e\x32\".tidl_meta_arch.TIDLScoreConverter:\x07SOFTMAX\x12:\n\x0fprior_box_param\x18\x08 \x03(\x0b\x32!.tidl_meta_arch.PriorBoxParameter\x12>\n\x16\x64\x65tection_output_param\x18\t \x01(\x0b\x32\x1e.tidl_meta_arch.TIDLOdPostProc\x12\x44\n\x0b\x64\x61ta_layout\x18\n \x01(\x0e\x32$.tidl_meta_arch.TIDLAnchorDataLayout:\tSEPARATED\x12\x11\n\tframework\x18\x0b \x01(\t\" \n\x10TidlMaTfOdApiSsd\x12\x0c\n\x04name\x18\x01 \x01(\t\" \n\x10TidlMaFasterRcnn\x12\x0c\n\x04name\x18\x01 \x01(\t\"\xd6\x01\n\nTidlYoloOd\x12\x32\n\nyolo_param\x18\x01 \x03(\x0b\x32\x1e.tidl_meta_arch.TIDLYoloParams\x12>\n\x16\x64\x65tection_output_param\x18\x02 \x02(\x0b\x32\x1e.tidl_meta_arch.TIDLOdPostProc\x12\x0c\n\x04name\x18\x03 \x02(\t\x12\x10\n\x08in_width\x18\x04 \x02(\r\x12\x11\n\tin_height\x18\x05 \x02(\r\x12\x0e\n\x06output\x18\x06 \x03(\t\x12\x11\n\tframework\x18\x07 \x01(\t\"L\n\x0eTIDLYoloParams\x12\r\n\x05input\x18\x01 \x02(\t\x12\x14\n\x0c\x61nchor_width\x18\x02 \x03(\x02\x12\x15\n\ranchor_height\x18\x03 \x03(\x02\"f\n\x18RetinaNetAnchorParameter\x12\x14\n\x0c\x61spect_ratio\x18\x01 \x03(\x02\x12\x19\n\x11octave_base_scale\x18\x02 \x02(\x02\x12\x19\n\x11scales_per_octave\x18\x03 \x02(\r\"\xf6\x03\n\x0fTidlMaRetinaNet\x12\x11\n\tbox_input\x18\x01 \x03(\t\x12\x13\n\x0b\x63lass_input\x18\x02 \x03(\t\x12\x0e\n\x06output\x18\x03 \x03(\t\x12\x0c\n\x04name\x18\x04 \x01(\t\x12\x10\n\x08in_width\x18\x05 \x02(\r\x12\x11\n\tin_height\x18\x06 \x02(\r\x12\x1a\n\x0f\x61nchorbox_order\x18\x10 \x01(\r:\x01\x30\x12\x13\n\x07x_scale\x18\x07 \x01(\x02:\x02\x31\x30\x12\x13\n\x07y_scale\x18\x08 \x01(\x02:\x02\x31\x30\x12\x13\n\x08x_offset\x18\x0e \x01(\x02:\x01\x30\x12\x13\n\x08y_offset\x18\x0f \x01(\x02:\x01\x30\x12\x16\n\x0bwidth_scale\x18\t \x01(\x02:\x01\x35\x12\x17\n\x0cheight_scale\x18\n \x01(\x02:\x01\x35\x12\x44\n\x0fscore_converter\x18\x0b \x01(\x0e\x32\".tidl_meta_arch.TIDLScoreConverter:\x07SOFTMAX\x12>\n\x0c\x61nchor_param\x18\x0c \x02(\x0b\x32(.tidl_meta_arch.RetinaNetAnchorParameter\x12>\n\x16\x64\x65tection_output_param\x18\r \x02(\x0b\x32\x1e.tidl_meta_arch.TIDLOdPostProc\x12\x11\n\tframework\x18\x11 \x01(\t\"\xb0\x04\n\nTidlMa3DOD\x12\x11\n\tbox_input\x18\x01 \x03(\t\x12\x13\n\x0b\x63lass_input\x18\x02 \x03(\t\x12\x11\n\tdir_input\x18\x03 \x03(\t\x12\x0e\n\x06output\x18\x04 \x03(\t\x12\x0c\n\x04name\x18\x05 \x01(\t\x12\r\n\x05min_x\x18\x06 \x02(\x02\x12\r\n\x05max_x\x18\x07 \x02(\x02\x12\r\n\x05min_y\x18\x08 \x02(\x02\x12\r\n\x05max_y\x18\t \x02(\x02\x12\r\n\x05min_z\x18\n \x02(\x02\x12\r\n\x05max_z\x18\x0b \x02(\x02\x12\x14\n\x0cvoxel_size_x\x18\x0c \x02(\x02\x12\x14\n\x0cvoxel_size_y\x18\r \x02(\x02\x12\x14\n\x0cvoxel_size_z\x18\x0e \x02(\x02\x12\x1c\n\x14max_points_per_voxel\x18\x0f \x02(\r\x12\x44\n\x0fscore_converter\x18\x10 \x01(\x0e\x32\".tidl_meta_arch.TIDLScoreConverter:\x07SIGMOID\x12\x43\n\x14prior_box_3dod_param\x18\x11 \x03(\x0b\x32%.tidl_meta_arch.PriorBox3DODParameter\x12>\n\x16\x64\x65tection_output_param\x18\x12 \x01(\x0b\x32\x1e.tidl_meta_arch.TIDLOdPostProc\x12\x44\n\x0b\x64\x61ta_layout\x18\x13 \x01(\x0e\x32$.tidl_meta_arch.TIDLAnchorDataLayout:\tSEPARATED\"W\n\x19TIDLCameraIntrinsicParams\x12\r\n\x02\x66x\x18\x01 \x01(\x02:\x01\x31\x12\r\n\x02\x66y\x18\x02 \x01(\x02:\x01\x31\x12\r\n\x02px\x18\x03 \x01(\x02:\x01\x30\x12\r\n\x02py\x18\x04 \x01(\x02:\x01\x30*\xc4\x01\n\x0fTIDLBoxCodeType\x12\n\n\x06\x43ORNER\x10\x01\x12\x0f\n\x0b\x43\x45NTER_SIZE\x10\x02\x12\x0f\n\x0b\x43ORNER_SIZE\x10\x03\x12\x13\n\x0f\x43\x45NTER_SIZE_EXP\x10\x04\x12\x14\n\x10\x43\x45NTER_SIZE_YXHW\x10\x05\x12\x15\n\x11\x43ODE_TYPE_YOLO_V5\x10\x06\x12\x14\n\x10\x43ODE_TYPE_YOLO_X\x10\x07\x12\x12\n\x0e\x43ODE_TYPE_3DOD\x10\x08\x12\x17\n\x13\x43ODE_TYPE_DIST2BBOX\x10\t*<\n\x12TIDLScoreConverter\x12\x0c\n\x08IDENTITY\x10\x00\x12\x0b\n\x07SIGMOID\x10\x01\x12\x0b\n\x07SOFTMAX\x10\x02*6\n\x14TIDLAnchorDataLayout\x12\r\n\tSEPARATED\x10\x00\x12\x0f\n\x0bINTERLEAVED\x10\x01'
++)
++
++_TIDLBOXCODETYPE = _descriptor.EnumDescriptor(
++  name='TIDLBoxCodeType',
++  full_name='tidl_meta_arch.TIDLBoxCodeType',
++  filename=None,
++  file=DESCRIPTOR,
++  create_key=_descriptor._internal_create_key,
++  values=[
++    _descriptor.EnumValueDescriptor(
++      name='CORNER', index=0, number=1,
++      serialized_options=None,
++      type=None,
++      create_key=_descriptor._internal_create_key),
++    _descriptor.EnumValueDescriptor(
++      name='CENTER_SIZE', index=1, number=2,
++      serialized_options=None,
++      type=None,
++      create_key=_descriptor._internal_create_key),
++    _descriptor.EnumValueDescriptor(
++      name='CORNER_SIZE', index=2, number=3,
++      serialized_options=None,
++      type=None,
++      create_key=_descriptor._internal_create_key),
++    _descriptor.EnumValueDescriptor(
++      name='CENTER_SIZE_EXP', index=3, number=4,
++      serialized_options=None,
++      type=None,
++      create_key=_descriptor._internal_create_key),
++    _descriptor.EnumValueDescriptor(
++      name='CENTER_SIZE_YXHW', index=4, number=5,
++      serialized_options=None,
++      type=None,
++      create_key=_descriptor._internal_create_key),
++    _descriptor.EnumValueDescriptor(
++      name='CODE_TYPE_YOLO_V5', index=5, number=6,
++      serialized_options=None,
++      type=None,
++      create_key=_descriptor._internal_create_key),
++    _descriptor.EnumValueDescriptor(
++      name='CODE_TYPE_YOLO_X', index=6, number=7,
++      serialized_options=None,
++      type=None,
++      create_key=_descriptor._internal_create_key),
++    _descriptor.EnumValueDescriptor(
++      name='CODE_TYPE_3DOD', index=7, number=8,
++      serialized_options=None,
++      type=None,
++      create_key=_descriptor._internal_create_key),
++    _descriptor.EnumValueDescriptor(
++      name='CODE_TYPE_DIST2BBOX', index=8, number=9,
++      serialized_options=None,
++      type=None,
++      create_key=_descriptor._internal_create_key),
++  ],
++  containing_type=None,
++  serialized_options=None,
++  serialized_start=4271,
++  serialized_end=4467,
++)
++_sym_db.RegisterEnumDescriptor(_TIDLBOXCODETYPE)
++
++TIDLBoxCodeType = enum_type_wrapper.EnumTypeWrapper(_TIDLBOXCODETYPE)
++_TIDLSCORECONVERTER = _descriptor.EnumDescriptor(
++  name='TIDLScoreConverter',
++  full_name='tidl_meta_arch.TIDLScoreConverter',
++  filename=None,
++  file=DESCRIPTOR,
++  create_key=_descriptor._internal_create_key,
++  values=[
++    _descriptor.EnumValueDescriptor(
++      name='IDENTITY', index=0, number=0,
++      serialized_options=None,
++      type=None,
++      create_key=_descriptor._internal_create_key),
++    _descriptor.EnumValueDescriptor(
++      name='SIGMOID', index=1, number=1,
++      serialized_options=None,
++      type=None,
++      create_key=_descriptor._internal_create_key),
++    _descriptor.EnumValueDescriptor(
++      name='SOFTMAX', index=2, number=2,
++      serialized_options=None,
++      type=None,
++      create_key=_descriptor._internal_create_key),
++  ],
++  containing_type=None,
++  serialized_options=None,
++  serialized_start=4469,
++  serialized_end=4529,
++)
++_sym_db.RegisterEnumDescriptor(_TIDLSCORECONVERTER)
++
++TIDLScoreConverter = enum_type_wrapper.EnumTypeWrapper(_TIDLSCORECONVERTER)
++_TIDLANCHORDATALAYOUT = _descriptor.EnumDescriptor(
++  name='TIDLAnchorDataLayout',
++  full_name='tidl_meta_arch.TIDLAnchorDataLayout',
++  filename=None,
++  file=DESCRIPTOR,
++  create_key=_descriptor._internal_create_key,
++  values=[
++    _descriptor.EnumValueDescriptor(
++      name='SEPARATED', index=0, number=0,
++      serialized_options=None,
++      type=None,
++      create_key=_descriptor._internal_create_key),
++    _descriptor.EnumValueDescriptor(
++      name='INTERLEAVED', index=1, number=1,
++      serialized_options=None,
++      type=None,
++      create_key=_descriptor._internal_create_key),
++  ],
++  containing_type=None,
++  serialized_options=None,
++  serialized_start=4531,
++  serialized_end=4585,
++)
++_sym_db.RegisterEnumDescriptor(_TIDLANCHORDATALAYOUT)
++
++TIDLAnchorDataLayout = enum_type_wrapper.EnumTypeWrapper(_TIDLANCHORDATALAYOUT)
++CORNER = 1
++CENTER_SIZE = 2
++CORNER_SIZE = 3
++CENTER_SIZE_EXP = 4
++CENTER_SIZE_YXHW = 5
++CODE_TYPE_YOLO_V5 = 6
++CODE_TYPE_YOLO_X = 7
++CODE_TYPE_3DOD = 8
++CODE_TYPE_DIST2BBOX = 9
++IDENTITY = 0
++SIGMOID = 1
++SOFTMAX = 2
++SEPARATED = 0
++INTERLEAVED = 1
++
++
++
++_TIDLMETAARCH = _descriptor.Descriptor(
++  name='TIDLMetaArch',
++  full_name='tidl_meta_arch.TIDLMetaArch',
++  filename=None,
++  file=DESCRIPTOR,
++  containing_type=None,
++  create_key=_descriptor._internal_create_key,
++  fields=[
++    _descriptor.FieldDescriptor(
++      name='name', full_name='tidl_meta_arch.TIDLMetaArch.name', index=0,
++      number=1, type=9, cpp_type=9, label=1,
++      has_default_value=False, default_value=b"".decode('utf-8'),
++      message_type=None, enum_type=None, containing_type=None,
++      is_extension=False, extension_scope=None,
++      serialized_options=None, file=DESCRIPTOR,  create_key=_descriptor._internal_create_key),
++    _descriptor.FieldDescriptor(
++      name='caffe_ssd', full_name='tidl_meta_arch.TIDLMetaArch.caffe_ssd', index=1,
++      number=2, type=11, cpp_type=10, label=3,
++      has_default_value=False, default_value=[],
++      message_type=None, enum_type=None, containing_type=None,
++      is_extension=False, extension_scope=None,
++      serialized_options=None, file=DESCRIPTOR,  create_key=_descriptor._internal_create_key),
++    _descriptor.FieldDescriptor(
++      name='tf_od_api_ssd', full_name='tidl_meta_arch.TIDLMetaArch.tf_od_api_ssd', index=2,
++      number=3, type=11, cpp_type=10, label=3,
++      has_default_value=False, default_value=[],
++      message_type=None, enum_type=None, containing_type=None,
++      is_extension=False, extension_scope=None,
++      serialized_options=None, file=DESCRIPTOR,  create_key=_descriptor._internal_create_key),
++    _descriptor.FieldDescriptor(
++      name='tidl_ssd', full_name='tidl_meta_arch.TIDLMetaArch.tidl_ssd', index=3,
++      number=4, type=11, cpp_type=10, label=3,
++      has_default_value=False, default_value=[],
++      message_type=None, enum_type=None, containing_type=None,
++      is_extension=False, extension_scope=None,
++      serialized_options=None, file=DESCRIPTOR,  create_key=_descriptor._internal_create_key),
++    _descriptor.FieldDescriptor(
++      name='tidl_faster_rcnn', full_name='tidl_meta_arch.TIDLMetaArch.tidl_faster_rcnn', index=4,
++      number=5, type=11, cpp_type=10, label=3,
++      has_default_value=False, default_value=[],
++      message_type=None, enum_type=None, containing_type=None,
++      is_extension=False, extension_scope=None,
++      serialized_options=None, file=DESCRIPTOR,  create_key=_descriptor._internal_create_key),
++    _descriptor.FieldDescriptor(
++      name='tidl_yolo', full_name='tidl_meta_arch.TIDLMetaArch.tidl_yolo', index=5,
++      number=6, type=11, cpp_type=10, label=3,
++      has_default_value=False, default_value=[],
++      message_type=None, enum_type=None, containing_type=None,
++      is_extension=False, extension_scope=None,
++      serialized_options=None, file=DESCRIPTOR,  create_key=_descriptor._internal_create_key),
++    _descriptor.FieldDescriptor(
++      name='tidl_retinanet', full_name='tidl_meta_arch.TIDLMetaArch.tidl_retinanet', index=6,
++      number=7, type=11, cpp_type=10, label=3,
++      has_default_value=False, default_value=[],
++      message_type=None, enum_type=None, containing_type=None,
++      is_extension=False, extension_scope=None,
++      serialized_options=None, file=DESCRIPTOR,  create_key=_descriptor._internal_create_key),
++    _descriptor.FieldDescriptor(
++      name='tidl_3dod', full_name='tidl_meta_arch.TIDLMetaArch.tidl_3dod', index=7,
++      number=8, type=11, cpp_type=10, label=3,
++      has_default_value=False, default_value=[],
++      message_type=None, enum_type=None, containing_type=None,
++      is_extension=False, extension_scope=None,
++      serialized_options=None, file=DESCRIPTOR,  create_key=_descriptor._internal_create_key),
++  ],
++  extensions=[
++  ],
++  nested_types=[],
++  enum_types=[
++  ],
++  serialized_options=None,
++  is_extendable=False,
++  syntax='proto2',
++  extension_ranges=[],
++  oneofs=[
++  ],
++  serialized_start=43,
++  serialized_end=435,
++)
++
++
++_TIDLNMSPARAM = _descriptor.Descriptor(
++  name='TIDLNmsParam',
++  full_name='tidl_meta_arch.TIDLNmsParam',
++  filename=None,
++  file=DESCRIPTOR,
++  containing_type=None,
++  create_key=_descriptor._internal_create_key,
++  fields=[
++    _descriptor.FieldDescriptor(
++      name='nms_threshold', full_name='tidl_meta_arch.TIDLNmsParam.nms_threshold', index=0,
++      number=1, type=2, cpp_type=6, label=1,
++      has_default_value=True, default_value=float(0.3),
++      message_type=None, enum_type=None, containing_type=None,
++      is_extension=False, extension_scope=None,
++      serialized_options=None, file=DESCRIPTOR,  create_key=_descriptor._internal_create_key),
++    _descriptor.FieldDescriptor(
++      name='top_k', full_name='tidl_meta_arch.TIDLNmsParam.top_k', index=1,
++      number=2, type=5, cpp_type=1, label=1,
++      has_default_value=False, default_value=0,
++      message_type=None, enum_type=None, containing_type=None,
++      is_extension=False, extension_scope=None,
++      serialized_options=None, file=DESCRIPTOR,  create_key=_descriptor._internal_create_key),
++    _descriptor.FieldDescriptor(
++      name='top_k_all_class', full_name='tidl_meta_arch.TIDLNmsParam.top_k_all_class', index=2,
++      number=3, type=5, cpp_type=1, label=1,
++      has_default_value=True, default_value=-1,
++      message_type=None, enum_type=None, containing_type=None,
++      is_extension=False, extension_scope=None,
++      serialized_options=None, file=DESCRIPTOR,  create_key=_descriptor._internal_create_key),
++    _descriptor.FieldDescriptor(
++      name='eta', full_name='tidl_meta_arch.TIDLNmsParam.eta', index=3,
++      number=4, type=2, cpp_type=6, label=1,
++      has_default_value=True, default_value=float(1),
++      message_type=None, enum_type=None, containing_type=None,
++      is_extension=False, extension_scope=None,
++      serialized_options=None, file=DESCRIPTOR,  create_key=_descriptor._internal_create_key),
++  ],
++  extensions=[
++  ],
++  nested_types=[],
++  enum_types=[
++  ],
++  serialized_options=None,
++  is_extendable=False,
++  syntax='proto2',
++  extension_ranges=[],
++  oneofs=[
++  ],
++  serialized_start=437,
++  serialized_end=539,
++)
++
++
++_PRIORBOXPARAMETER = _descriptor.Descriptor(
++  name='PriorBoxParameter',
++  full_name='tidl_meta_arch.PriorBoxParameter',
++  filename=None,
++  file=DESCRIPTOR,
++  containing_type=None,
++  create_key=_descriptor._internal_create_key,
++  fields=[
++    _descriptor.FieldDescriptor(
++      name='min_size', full_name='tidl_meta_arch.PriorBoxParameter.min_size', index=0,
++      number=1, type=2, cpp_type=6, label=3,
++      has_default_value=False, default_value=[],
++      message_type=None, enum_type=None, containing_type=None,
++      is_extension=False, extension_scope=None,
++      serialized_options=None, file=DESCRIPTOR,  create_key=_descriptor._internal_create_key),
++    _descriptor.FieldDescriptor(
++      name='max_size', full_name='tidl_meta_arch.PriorBoxParameter.max_size', index=1,
++      number=2, type=2, cpp_type=6, label=3,
++      has_default_value=False, default_value=[],
++      message_type=None, enum_type=None, containing_type=None,
++      is_extension=False, extension_scope=None,
++      serialized_options=None, file=DESCRIPTOR,  create_key=_descriptor._internal_create_key),
++    _descriptor.FieldDescriptor(
++      name='aspect_ratio', full_name='tidl_meta_arch.PriorBoxParameter.aspect_ratio', index=2,
++      number=3, type=2, cpp_type=6, label=3,
++      has_default_value=False, default_value=[],
++      message_type=None, enum_type=None, containing_type=None,
++      is_extension=False, extension_scope=None,
++      serialized_options=None, file=DESCRIPTOR,  create_key=_descriptor._internal_create_key),
++    _descriptor.FieldDescriptor(
++      name='flip', full_name='tidl_meta_arch.PriorBoxParameter.flip', index=3,
++      number=4, type=8, cpp_type=7, label=1,
++      has_default_value=True, default_value=True,
++      message_type=None, enum_type=None, containing_type=None,
++      is_extension=False, extension_scope=None,
++      serialized_options=None, file=DESCRIPTOR,  create_key=_descriptor._internal_create_key),
++    _descriptor.FieldDescriptor(
++      name='clip', full_name='tidl_meta_arch.PriorBoxParameter.clip', index=4,
++      number=5, type=8, cpp_type=7, label=1,
++      has_default_value=True, default_value=False,
++      message_type=None, enum_type=None, containing_type=None,
++      is_extension=False, extension_scope=None,
++      serialized_options=None, file=DESCRIPTOR,  create_key=_descriptor._internal_create_key),
++    _descriptor.FieldDescriptor(
++      name='variance', full_name='tidl_meta_arch.PriorBoxParameter.variance', index=5,
++      number=6, type=2, cpp_type=6, label=3,
++      has_default_value=False, default_value=[],
++      message_type=None, enum_type=None, containing_type=None,
++      is_extension=False, extension_scope=None,
++      serialized_options=None, file=DESCRIPTOR,  create_key=_descriptor._internal_create_key),
++    _descriptor.FieldDescriptor(
++      name='img_size', full_name='tidl_meta_arch.PriorBoxParameter.img_size', index=6,
++      number=7, type=13, cpp_type=3, label=1,
++      has_default_value=False, default_value=0,
++      message_type=None, enum_type=None, containing_type=None,
++      is_extension=False, extension_scope=None,
++      serialized_options=None, file=DESCRIPTOR,  create_key=_descriptor._internal_create_key),
++    _descriptor.FieldDescriptor(
++      name='img_h', full_name='tidl_meta_arch.PriorBoxParameter.img_h', index=7,
++      number=8, type=13, cpp_type=3, label=1,
++      has_default_value=False, default_value=0,
++      message_type=None, enum_type=None, containing_type=None,
++      is_extension=False, extension_scope=None,
++      serialized_options=None, file=DESCRIPTOR,  create_key=_descriptor._internal_create_key),
++    _descriptor.FieldDescriptor(
++      name='img_w', full_name='tidl_meta_arch.PriorBoxParameter.img_w', index=8,
++      number=9, type=13, cpp_type=3, label=1,
++      has_default_value=False, default_value=0,
++      message_type=None, enum_type=None, containing_type=None,
++      is_extension=False, extension_scope=None,
++      serialized_options=None, file=DESCRIPTOR,  create_key=_descriptor._internal_create_key),
++    _descriptor.FieldDescriptor(
++      name='step', full_name='tidl_meta_arch.PriorBoxParameter.step', index=9,
++      number=10, type=2, cpp_type=6, label=1,
++      has_default_value=False, default_value=float(0),
++      message_type=None, enum_type=None, containing_type=None,
++      is_extension=False, extension_scope=None,
++      serialized_options=None, file=DESCRIPTOR,  create_key=_descriptor._internal_create_key),
++    _descriptor.FieldDescriptor(
++      name='step_h', full_name='tidl_meta_arch.PriorBoxParameter.step_h', index=10,
++      number=11, type=2, cpp_type=6, label=1,
++      has_default_value=False, default_value=float(0),
++      message_type=None, enum_type=None, containing_type=None,
++      is_extension=False, extension_scope=None,
++      serialized_options=None, file=DESCRIPTOR,  create_key=_descriptor._internal_create_key),
++    _descriptor.FieldDescriptor(
++      name='step_w', full_name='tidl_meta_arch.PriorBoxParameter.step_w', index=11,
++      number=12, type=2, cpp_type=6, label=1,
++      has_default_value=False, default_value=float(0),
++      message_type=None, enum_type=None, containing_type=None,
++      is_extension=False, extension_scope=None,
++      serialized_options=None, file=DESCRIPTOR,  create_key=_descriptor._internal_create_key),
++    _descriptor.FieldDescriptor(
++      name='offset', full_name='tidl_meta_arch.PriorBoxParameter.offset', index=12,
++      number=13, type=2, cpp_type=6, label=1,
++      has_default_value=True, default_value=float(0.5),
++      message_type=None, enum_type=None, containing_type=None,
++      is_extension=False, extension_scope=None,
++      serialized_options=None, file=DESCRIPTOR,  create_key=_descriptor._internal_create_key),
++    _descriptor.FieldDescriptor(
++      name='num_keypoint', full_name='tidl_meta_arch.PriorBoxParameter.num_keypoint', index=13,
++      number=14, type=13, cpp_type=3, label=1,
++      has_default_value=True, default_value=0,
++      message_type=None, enum_type=None, containing_type=None,
++      is_extension=False, extension_scope=None,
++      serialized_options=None, file=DESCRIPTOR,  create_key=_descriptor._internal_create_key),
++  ],
++  extensions=[
++  ],
++  nested_types=[],
++  enum_types=[
++  ],
++  serialized_options=None,
++  is_extendable=False,
++  syntax='proto2',
++  extension_ranges=[],
++  oneofs=[
++  ],
++  serialized_start=542,
++  serialized_end=818,
++)
++
++
++_PRIORBOX3DODPARAMETER = _descriptor.Descriptor(
++  name='PriorBox3DODParameter',
++  full_name='tidl_meta_arch.PriorBox3DODParameter',
++  filename=None,
++  file=DESCRIPTOR,
++  containing_type=None,
++  create_key=_descriptor._internal_create_key,
++  fields=[
++    _descriptor.FieldDescriptor(
++      name='anchor_width', full_name='tidl_meta_arch.PriorBox3DODParameter.anchor_width', index=0,
++      number=1, type=2, cpp_type=6, label=3,
++      has_default_value=False, default_value=[],
++      message_type=None, enum_type=None, containing_type=None,
++      is_extension=False, extension_scope=None,
++      serialized_options=None, file=DESCRIPTOR,  create_key=_descriptor._internal_create_key),
++    _descriptor.FieldDescriptor(
++      name='anchor_height', full_name='tidl_meta_arch.PriorBox3DODParameter.anchor_height', index=1,
++      number=2, type=2, cpp_type=6, label=3,
++      has_default_value=False, default_value=[],
++      message_type=None, enum_type=None, containing_type=None,
++      is_extension=False, extension_scope=None,
++      serialized_options=None, file=DESCRIPTOR,  create_key=_descriptor._internal_create_key),
++    _descriptor.FieldDescriptor(
++      name='anchor_length', full_name='tidl_meta_arch.PriorBox3DODParameter.anchor_length', index=2,
++      number=3, type=2, cpp_type=6, label=3,
++      has_default_value=False, default_value=[],
++      message_type=None, enum_type=None, containing_type=None,
++      is_extension=False, extension_scope=None,
++      serialized_options=None, file=DESCRIPTOR,  create_key=_descriptor._internal_create_key),
++    _descriptor.FieldDescriptor(
++      name='step_x', full_name='tidl_meta_arch.PriorBox3DODParameter.step_x', index=3,
++      number=4, type=2, cpp_type=6, label=2,
++      has_default_value=False, default_value=float(0),
++      message_type=None, enum_type=None, containing_type=None,
++      is_extension=False, extension_scope=None,
++      serialized_options=None, file=DESCRIPTOR,  create_key=_descriptor._internal_create_key),
++    _descriptor.FieldDescriptor(
++      name='step_y', full_name='tidl_meta_arch.PriorBox3DODParameter.step_y', index=4,
++      number=5, type=2, cpp_type=6, label=2,
++      has_default_value=False, default_value=float(0),
++      message_type=None, enum_type=None, containing_type=None,
++      is_extension=False, extension_scope=None,
++      serialized_options=None, file=DESCRIPTOR,  create_key=_descriptor._internal_create_key),
++    _descriptor.FieldDescriptor(
++      name='step_z', full_name='tidl_meta_arch.PriorBox3DODParameter.step_z', index=5,
++      number=6, type=2, cpp_type=6, label=2,
++      has_default_value=False, default_value=float(0),
++      message_type=None, enum_type=None, containing_type=None,
++      is_extension=False, extension_scope=None,
++      serialized_options=None, file=DESCRIPTOR,  create_key=_descriptor._internal_create_key),
++    _descriptor.FieldDescriptor(
++      name='offset_x', full_name='tidl_meta_arch.PriorBox3DODParameter.offset_x', index=6,
++      number=7, type=2, cpp_type=6, label=2,
++      has_default_value=False, default_value=float(0),
++      message_type=None, enum_type=None, containing_type=None,
++      is_extension=False, extension_scope=None,
++      serialized_options=None, file=DESCRIPTOR,  create_key=_descriptor._internal_create_key),
++    _descriptor.FieldDescriptor(
++      name='offset_y', full_name='tidl_meta_arch.PriorBox3DODParameter.offset_y', index=7,
++      number=8, type=2, cpp_type=6, label=2,
++      has_default_value=False, default_value=float(0),
++      message_type=None, enum_type=None, containing_type=None,
++      is_extension=False, extension_scope=None,
++      serialized_options=None, file=DESCRIPTOR,  create_key=_descriptor._internal_create_key),
++    _descriptor.FieldDescriptor(
++      name='offset_z', full_name='tidl_meta_arch.PriorBox3DODParameter.offset_z', index=8,
++      number=9, type=2, cpp_type=6, label=2,
++      has_default_value=False, default_value=float(0),
++      message_type=None, enum_type=None, containing_type=None,
++      is_extension=False, extension_scope=None,
++      serialized_options=None, file=DESCRIPTOR,  create_key=_descriptor._internal_create_key),
++    _descriptor.FieldDescriptor(
++      name='offset_dir', full_name='tidl_meta_arch.PriorBox3DODParameter.offset_dir', index=9,
++      number=10, type=2, cpp_type=6, label=2,
++      has_default_value=False, default_value=float(0),
++      message_type=None, enum_type=None, containing_type=None,
++      is_extension=False, extension_scope=None,
++      serialized_options=None, file=DESCRIPTOR,  create_key=_descriptor._internal_create_key),
++    _descriptor.FieldDescriptor(
++      name='rotation', full_name='tidl_meta_arch.PriorBox3DODParameter.rotation', index=10,
++      number=11, type=2, cpp_type=6, label=3,
++      has_default_value=False, default_value=[],
++      message_type=None, enum_type=None, containing_type=None,
++      is_extension=False, extension_scope=None,
++      serialized_options=None, file=DESCRIPTOR,  create_key=_descriptor._internal_create_key),
++  ],
++  extensions=[
++  ],
++  nested_types=[],
++  enum_types=[
++  ],
++  serialized_options=None,
++  is_extendable=False,
++  syntax='proto2',
++  extension_ranges=[],
++  oneofs=[
++  ],
++  serialized_start=821,
++  serialized_end=1052,
++)
++
++
++_TIDLODSAVEPARAMS = _descriptor.Descriptor(
++  name='TIDLOdSaveParams',
++  full_name='tidl_meta_arch.TIDLOdSaveParams',
++  filename=None,
++  file=DESCRIPTOR,
++  containing_type=None,
++  create_key=_descriptor._internal_create_key,
++  fields=[
++    _descriptor.FieldDescriptor(
++      name='output_directory', full_name='tidl_meta_arch.TIDLOdSaveParams.output_directory', index=0,
++      number=1, type=9, cpp_type=9, label=1,
++      has_default_value=False, default_value=b"".decode('utf-8'),
++      message_type=None, enum_type=None, containing_type=None,
++      is_extension=False, extension_scope=None,
++      serialized_options=None, file=DESCRIPTOR,  create_key=_descriptor._internal_create_key),
++    _descriptor.FieldDescriptor(
++      name='output_name_prefix', full_name='tidl_meta_arch.TIDLOdSaveParams.output_name_prefix', index=1,
++      number=2, type=9, cpp_type=9, label=1,
++      has_default_value=False, default_value=b"".decode('utf-8'),
++      message_type=None, enum_type=None, containing_type=None,
++      is_extension=False, extension_scope=None,
++      serialized_options=None, file=DESCRIPTOR,  create_key=_descriptor._internal_create_key),
++    _descriptor.FieldDescriptor(
++      name='output_format', full_name='tidl_meta_arch.TIDLOdSaveParams.output_format', index=2,
++      number=3, type=9, cpp_type=9, label=1,
++      has_default_value=False, default_value=b"".decode('utf-8'),
++      message_type=None, enum_type=None, containing_type=None,
++      is_extension=False, extension_scope=None,
++      serialized_options=None, file=DESCRIPTOR,  create_key=_descriptor._internal_create_key),
++    _descriptor.FieldDescriptor(
++      name='label_map_file', full_name='tidl_meta_arch.TIDLOdSaveParams.label_map_file', index=3,
++      number=4, type=9, cpp_type=9, label=1,
++      has_default_value=False, default_value=b"".decode('utf-8'),
++      message_type=None, enum_type=None, containing_type=None,
++      is_extension=False, extension_scope=None,
++      serialized_options=None, file=DESCRIPTOR,  create_key=_descriptor._internal_create_key),
++    _descriptor.FieldDescriptor(
++      name='name_size_file', full_name='tidl_meta_arch.TIDLOdSaveParams.name_size_file', index=4,
++      number=5, type=9, cpp_type=9, label=1,
++      has_default_value=False, default_value=b"".decode('utf-8'),
++      message_type=None, enum_type=None, containing_type=None,
++      is_extension=False, extension_scope=None,
++      serialized_options=None, file=DESCRIPTOR,  create_key=_descriptor._internal_create_key),
++    _descriptor.FieldDescriptor(
++      name='num_test_image', full_name='tidl_meta_arch.TIDLOdSaveParams.num_test_image', index=5,
++      number=6, type=13, cpp_type=3, label=1,
++      has_default_value=False, default_value=0,
++      message_type=None, enum_type=None, containing_type=None,
++      is_extension=False, extension_scope=None,
++      serialized_options=None, file=DESCRIPTOR,  create_key=_descriptor._internal_create_key),
++    _descriptor.FieldDescriptor(
++      name='resize_param', full_name='tidl_meta_arch.TIDLOdSaveParams.resize_param', index=6,
++      number=7, type=9, cpp_type=9, label=1,
++      has_default_value=False, default_value=b"".decode('utf-8'),
++      message_type=None, enum_type=None, containing_type=None,
++      is_extension=False, extension_scope=None,
++      serialized_options=None, file=DESCRIPTOR,  create_key=_descriptor._internal_create_key),
++  ],
++  extensions=[
++  ],
++  nested_types=[],
++  enum_types=[
++  ],
++  serialized_options=None,
++  is_extendable=False,
++  syntax='proto2',
++  extension_ranges=[],
++  oneofs=[
++  ],
++  serialized_start=1055,
++  serialized_end=1244,
++)
++
++
++_TIDLODPOSTPROC = _descriptor.Descriptor(
++  name='TIDLOdPostProc',
++  full_name='tidl_meta_arch.TIDLOdPostProc',
++  filename=None,
++  file=DESCRIPTOR,
++  containing_type=None,
++  create_key=_descriptor._internal_create_key,
++  fields=[
++    _descriptor.FieldDescriptor(
++      name='num_classes', full_name='tidl_meta_arch.TIDLOdPostProc.num_classes', index=0,
++      number=1, type=13, cpp_type=3, label=1,
++      has_default_value=False, default_value=0,
++      message_type=None, enum_type=None, containing_type=None,
++      is_extension=False, extension_scope=None,
++      serialized_options=None, file=DESCRIPTOR,  create_key=_descriptor._internal_create_key),
++    _descriptor.FieldDescriptor(
++      name='share_location', full_name='tidl_meta_arch.TIDLOdPostProc.share_location', index=1,
++      number=2, type=8, cpp_type=7, label=1,
++      has_default_value=True, default_value=True,
++      message_type=None, enum_type=None, containing_type=None,
++      is_extension=False, extension_scope=None,
++      serialized_options=None, file=DESCRIPTOR,  create_key=_descriptor._internal_create_key),
++    _descriptor.FieldDescriptor(
++      name='background_label_id', full_name='tidl_meta_arch.TIDLOdPostProc.background_label_id', index=2,
++      number=3, type=5, cpp_type=1, label=1,
++      has_default_value=True, default_value=0,
++      message_type=None, enum_type=None, containing_type=None,
++      is_extension=False, extension_scope=None,
++      serialized_options=None, file=DESCRIPTOR,  create_key=_descriptor._internal_create_key),
++    _descriptor.FieldDescriptor(
++      name='nms_param', full_name='tidl_meta_arch.TIDLOdPostProc.nms_param', index=3,
++      number=4, type=11, cpp_type=10, label=1,
++      has_default_value=False, default_value=None,
++      message_type=None, enum_type=None, containing_type=None,
++      is_extension=False, extension_scope=None,
++      serialized_options=None, file=DESCRIPTOR,  create_key=_descriptor._internal_create_key),
++    _descriptor.FieldDescriptor(
++      name='save_output_param', full_name='tidl_meta_arch.TIDLOdPostProc.save_output_param', index=4,
++      number=5, type=11, cpp_type=10, label=1,
++      has_default_value=False, default_value=None,
++      message_type=None, enum_type=None, containing_type=None,
++      is_extension=False, extension_scope=None,
++      serialized_options=None, file=DESCRIPTOR,  create_key=_descriptor._internal_create_key),
++    _descriptor.FieldDescriptor(
++      name='code_type', full_name='tidl_meta_arch.TIDLOdPostProc.code_type', index=5,
++      number=6, type=14, cpp_type=8, label=1,
++      has_default_value=True, default_value=1,
++      message_type=None, enum_type=None, containing_type=None,
++      is_extension=False, extension_scope=None,
++      serialized_options=None, file=DESCRIPTOR,  create_key=_descriptor._internal_create_key),
++    _descriptor.FieldDescriptor(
++      name='variance_encoded_in_target', full_name='tidl_meta_arch.TIDLOdPostProc.variance_encoded_in_target', index=6,
++      number=8, type=8, cpp_type=7, label=1,
++      has_default_value=True, default_value=False,
++      message_type=None, enum_type=None, containing_type=None,
++      is_extension=False, extension_scope=None,
++      serialized_options=None, file=DESCRIPTOR,  create_key=_descriptor._internal_create_key),
++    _descriptor.FieldDescriptor(
++      name='keep_top_k', full_name='tidl_meta_arch.TIDLOdPostProc.keep_top_k', index=7,
++      number=7, type=5, cpp_type=1, label=1,
++      has_default_value=True, default_value=-1,
++      message_type=None, enum_type=None, containing_type=None,
++      is_extension=False, extension_scope=None,
++      serialized_options=None, file=DESCRIPTOR,  create_key=_descriptor._internal_create_key),
++    _descriptor.FieldDescriptor(
++      name='confidence_threshold', full_name='tidl_meta_arch.TIDLOdPostProc.confidence_threshold', index=8,
++      number=9, type=2, cpp_type=6, label=1,
++      has_default_value=False, default_value=float(0),
++      message_type=None, enum_type=None, containing_type=None,
++      is_extension=False, extension_scope=None,
++      serialized_options=None, file=DESCRIPTOR,  create_key=_descriptor._internal_create_key),
++    _descriptor.FieldDescriptor(
++      name='visualize', full_name='tidl_meta_arch.TIDLOdPostProc.visualize', index=9,
++      number=10, type=8, cpp_type=7, label=1,
++      has_default_value=True, default_value=False,
++      message_type=None, enum_type=None, containing_type=None,
++      is_extension=False, extension_scope=None,
++      serialized_options=None, file=DESCRIPTOR,  create_key=_descriptor._internal_create_key),
++    _descriptor.FieldDescriptor(
++      name='visualize_threshold', full_name='tidl_meta_arch.TIDLOdPostProc.visualize_threshold', index=10,
++      number=11, type=2, cpp_type=6, label=1,
++      has_default_value=False, default_value=float(0),
++      message_type=None, enum_type=None, containing_type=None,
++      is_extension=False, extension_scope=None,
++      serialized_options=None, file=DESCRIPTOR,  create_key=_descriptor._internal_create_key),
++    _descriptor.FieldDescriptor(
++      name='save_file', full_name='tidl_meta_arch.TIDLOdPostProc.save_file', index=11,
++      number=12, type=9, cpp_type=9, label=1,
++      has_default_value=False, default_value=b"".decode('utf-8'),
++      message_type=None, enum_type=None, containing_type=None,
++      is_extension=False, extension_scope=None,
++      serialized_options=None, file=DESCRIPTOR,  create_key=_descriptor._internal_create_key),
++    _descriptor.FieldDescriptor(
++      name='num_keypoint', full_name='tidl_meta_arch.TIDLOdPostProc.num_keypoint', index=12,
++      number=13, type=13, cpp_type=3, label=1,
++      has_default_value=True, default_value=0,
++      message_type=None, enum_type=None, containing_type=None,
++      is_extension=False, extension_scope=None,
++      serialized_options=None, file=DESCRIPTOR,  create_key=_descriptor._internal_create_key),
++    _descriptor.FieldDescriptor(
++      name='keypoint_confidence', full_name='tidl_meta_arch.TIDLOdPostProc.keypoint_confidence', index=13,
++      number=14, type=8, cpp_type=7, label=1,
++      has_default_value=True, default_value=False,
++      message_type=None, enum_type=None, containing_type=None,
++      is_extension=False, extension_scope=None,
++      serialized_options=None, file=DESCRIPTOR,  create_key=_descriptor._internal_create_key),
++    _descriptor.FieldDescriptor(
++      name='sub_code_type', full_name='tidl_meta_arch.TIDLOdPostProc.sub_code_type', index=14,
++      number=15, type=13, cpp_type=3, label=1,
++      has_default_value=True, default_value=0,
++      message_type=None, enum_type=None, containing_type=None,
++      is_extension=False, extension_scope=None,
++      serialized_options=None, file=DESCRIPTOR,  create_key=_descriptor._internal_create_key),
++    _descriptor.FieldDescriptor(
++      name='camera_intrinsic_params', full_name='tidl_meta_arch.TIDLOdPostProc.camera_intrinsic_params', index=15,
++      number=16, type=11, cpp_type=10, label=1,
++      has_default_value=False, default_value=None,
++      message_type=None, enum_type=None, containing_type=None,
++      is_extension=False, extension_scope=None,
++      serialized_options=None, file=DESCRIPTOR,  create_key=_descriptor._internal_create_key),
++  ],
++  extensions=[
++  ],
++  nested_types=[],
++  enum_types=[
++  ],
++  serialized_options=None,
++  is_extendable=False,
++  syntax='proto2',
++  extension_ranges=[],
++  oneofs=[
++  ],
++  serialized_start=1247,
++  serialized_end=1850,
++)
++
++
++_TIDLMASSD = _descriptor.Descriptor(
++  name='TidlMaSsd',
++  full_name='tidl_meta_arch.TidlMaSsd',
++  filename=None,
++  file=DESCRIPTOR,
++  containing_type=None,
++  create_key=_descriptor._internal_create_key,
++  fields=[
++    _descriptor.FieldDescriptor(
++      name='box_input', full_name='tidl_meta_arch.TidlMaSsd.box_input', index=0,
++      number=1, type=9, cpp_type=9, label=3,
++      has_default_value=False, default_value=[],
++      message_type=None, enum_type=None, containing_type=None,
++      is_extension=False, extension_scope=None,
++      serialized_options=None, file=DESCRIPTOR,  create_key=_descriptor._internal_create_key),
++    _descriptor.FieldDescriptor(
++      name='class_input', full_name='tidl_meta_arch.TidlMaSsd.class_input', index=1,
++      number=2, type=9, cpp_type=9, label=3,
++      has_default_value=False, default_value=[],
++      message_type=None, enum_type=None, containing_type=None,
++      is_extension=False, extension_scope=None,
++      serialized_options=None, file=DESCRIPTOR,  create_key=_descriptor._internal_create_key),
++    _descriptor.FieldDescriptor(
++      name='output', full_name='tidl_meta_arch.TidlMaSsd.output', index=2,
++      number=3, type=9, cpp_type=9, label=1,
++      has_default_value=False, default_value=b"".decode('utf-8'),
++      message_type=None, enum_type=None, containing_type=None,
++      is_extension=False, extension_scope=None,
++      serialized_options=None, file=DESCRIPTOR,  create_key=_descriptor._internal_create_key),
++    _descriptor.FieldDescriptor(
++      name='name', full_name='tidl_meta_arch.TidlMaSsd.name', index=3,
++      number=4, type=9, cpp_type=9, label=1,
++      has_default_value=False, default_value=b"".decode('utf-8'),
++      message_type=None, enum_type=None, containing_type=None,
++      is_extension=False, extension_scope=None,
++      serialized_options=None, file=DESCRIPTOR,  create_key=_descriptor._internal_create_key),
++    _descriptor.FieldDescriptor(
++      name='in_width', full_name='tidl_meta_arch.TidlMaSsd.in_width', index=4,
++      number=5, type=13, cpp_type=3, label=1,
++      has_default_value=False, default_value=0,
++      message_type=None, enum_type=None, containing_type=None,
++      is_extension=False, extension_scope=None,
++      serialized_options=None, file=DESCRIPTOR,  create_key=_descriptor._internal_create_key),
++    _descriptor.FieldDescriptor(
++      name='in_height', full_name='tidl_meta_arch.TidlMaSsd.in_height', index=5,
++      number=6, type=13, cpp_type=3, label=1,
++      has_default_value=False, default_value=0,
++      message_type=None, enum_type=None, containing_type=None,
++      is_extension=False, extension_scope=None,
++      serialized_options=None, file=DESCRIPTOR,  create_key=_descriptor._internal_create_key),
++    _descriptor.FieldDescriptor(
++      name='score_converter', full_name='tidl_meta_arch.TidlMaSsd.score_converter', index=6,
++      number=7, type=14, cpp_type=8, label=1,
++      has_default_value=True, default_value=2,
++      message_type=None, enum_type=None, containing_type=None,
++      is_extension=False, extension_scope=None,
++      serialized_options=None, file=DESCRIPTOR,  create_key=_descriptor._internal_create_key),
++    _descriptor.FieldDescriptor(
++      name='prior_box_param', full_name='tidl_meta_arch.TidlMaSsd.prior_box_param', index=7,
++      number=8, type=11, cpp_type=10, label=3,
++      has_default_value=False, default_value=[],
++      message_type=None, enum_type=None, containing_type=None,
++      is_extension=False, extension_scope=None,
++      serialized_options=None, file=DESCRIPTOR,  create_key=_descriptor._internal_create_key),
++    _descriptor.FieldDescriptor(
++      name='detection_output_param', full_name='tidl_meta_arch.TidlMaSsd.detection_output_param', index=8,
++      number=9, type=11, cpp_type=10, label=1,
++      has_default_value=False, default_value=None,
++      message_type=None, enum_type=None, containing_type=None,
++      is_extension=False, extension_scope=None,
++      serialized_options=None, file=DESCRIPTOR,  create_key=_descriptor._internal_create_key),
++    _descriptor.FieldDescriptor(
++      name='data_layout', full_name='tidl_meta_arch.TidlMaSsd.data_layout', index=9,
++      number=10, type=14, cpp_type=8, label=1,
++      has_default_value=True, default_value=0,
++      message_type=None, enum_type=None, containing_type=None,
++      is_extension=False, extension_scope=None,
++      serialized_options=None, file=DESCRIPTOR,  create_key=_descriptor._internal_create_key),
++  ],
++  extensions=[
++  ],
++  nested_types=[],
++  enum_types=[
++  ],
++  serialized_options=None,
++  is_extendable=False,
++  syntax='proto2',
++  extension_ranges=[],
++  oneofs=[
++  ],
++  serialized_start=1853,
++  serialized_end=2235,
++)
++
++
++_TIDLMACAFFESSD = _descriptor.Descriptor(
++  name='TidlMaCaffeSsd',
++  full_name='tidl_meta_arch.TidlMaCaffeSsd',
++  filename=None,
++  file=DESCRIPTOR,
++  containing_type=None,
++  create_key=_descriptor._internal_create_key,
++  fields=[
++    _descriptor.FieldDescriptor(
++      name='box_input', full_name='tidl_meta_arch.TidlMaCaffeSsd.box_input', index=0,
++      number=1, type=9, cpp_type=9, label=3,
++      has_default_value=False, default_value=[],
++      message_type=None, enum_type=None, containing_type=None,
++      is_extension=False, extension_scope=None,
++      serialized_options=None, file=DESCRIPTOR,  create_key=_descriptor._internal_create_key),
++    _descriptor.FieldDescriptor(
++      name='class_input', full_name='tidl_meta_arch.TidlMaCaffeSsd.class_input', index=1,
++      number=2, type=9, cpp_type=9, label=3,
++      has_default_value=False, default_value=[],
++      message_type=None, enum_type=None, containing_type=None,
++      is_extension=False, extension_scope=None,
++      serialized_options=None, file=DESCRIPTOR,  create_key=_descriptor._internal_create_key),
++    _descriptor.FieldDescriptor(
++      name='output', full_name='tidl_meta_arch.TidlMaCaffeSsd.output', index=2,
++      number=3, type=9, cpp_type=9, label=3,
++      has_default_value=False, default_value=[],
++      message_type=None, enum_type=None, containing_type=None,
++      is_extension=False, extension_scope=None,
++      serialized_options=None, file=DESCRIPTOR,  create_key=_descriptor._internal_create_key),
++    _descriptor.FieldDescriptor(
++      name='name', full_name='tidl_meta_arch.TidlMaCaffeSsd.name', index=3,
++      number=4, type=9, cpp_type=9, label=1,
++      has_default_value=False, default_value=b"".decode('utf-8'),
++      message_type=None, enum_type=None, containing_type=None,
++      is_extension=False, extension_scope=None,
++      serialized_options=None, file=DESCRIPTOR,  create_key=_descriptor._internal_create_key),
++    _descriptor.FieldDescriptor(
++      name='in_width', full_name='tidl_meta_arch.TidlMaCaffeSsd.in_width', index=4,
++      number=5, type=13, cpp_type=3, label=1,
++      has_default_value=False, default_value=0,
++      message_type=None, enum_type=None, containing_type=None,
++      is_extension=False, extension_scope=None,
++      serialized_options=None, file=DESCRIPTOR,  create_key=_descriptor._internal_create_key),
++    _descriptor.FieldDescriptor(
++      name='in_height', full_name='tidl_meta_arch.TidlMaCaffeSsd.in_height', index=5,
++      number=6, type=13, cpp_type=3, label=1,
++      has_default_value=False, default_value=0,
++      message_type=None, enum_type=None, containing_type=None,
++      is_extension=False, extension_scope=None,
++      serialized_options=None, file=DESCRIPTOR,  create_key=_descriptor._internal_create_key),
++    _descriptor.FieldDescriptor(
++      name='score_converter', full_name='tidl_meta_arch.TidlMaCaffeSsd.score_converter', index=6,
++      number=7, type=14, cpp_type=8, label=1,
++      has_default_value=True, default_value=2,
++      message_type=None, enum_type=None, containing_type=None,
++      is_extension=False, extension_scope=None,
++      serialized_options=None, file=DESCRIPTOR,  create_key=_descriptor._internal_create_key),
++    _descriptor.FieldDescriptor(
++      name='prior_box_param', full_name='tidl_meta_arch.TidlMaCaffeSsd.prior_box_param', index=7,
++      number=8, type=11, cpp_type=10, label=3,
++      has_default_value=False, default_value=[],
++      message_type=None, enum_type=None, containing_type=None,
++      is_extension=False, extension_scope=None,
++      serialized_options=None, file=DESCRIPTOR,  create_key=_descriptor._internal_create_key),
++    _descriptor.FieldDescriptor(
++      name='detection_output_param', full_name='tidl_meta_arch.TidlMaCaffeSsd.detection_output_param', index=8,
++      number=9, type=11, cpp_type=10, label=1,
++      has_default_value=False, default_value=None,
++      message_type=None, enum_type=None, containing_type=None,
++      is_extension=False, extension_scope=None,
++      serialized_options=None, file=DESCRIPTOR,  create_key=_descriptor._internal_create_key),
++    _descriptor.FieldDescriptor(
++      name='data_layout', full_name='tidl_meta_arch.TidlMaCaffeSsd.data_layout', index=9,
++      number=10, type=14, cpp_type=8, label=1,
++      has_default_value=True, default_value=0,
++      message_type=None, enum_type=None, containing_type=None,
++      is_extension=False, extension_scope=None,
++      serialized_options=None, file=DESCRIPTOR,  create_key=_descriptor._internal_create_key),
++    _descriptor.FieldDescriptor(
++      name='framework', full_name='tidl_meta_arch.TidlMaCaffeSsd.framework', index=10,
++      number=11, type=9, cpp_type=9, label=1,
++      has_default_value=False, default_value=b"".decode('utf-8'),
++      message_type=None, enum_type=None, containing_type=None,
++      is_extension=False, extension_scope=None,
++      serialized_options=None, file=DESCRIPTOR,  create_key=_descriptor._internal_create_key),
++  ],
++  extensions=[
++  ],
++  nested_types=[],
++  enum_types=[
++  ],
++  serialized_options=None,
++  is_extendable=False,
++  syntax='proto2',
++  extension_ranges=[],
++  oneofs=[
++  ],
++  serialized_start=2238,
++  serialized_end=2644,
++)
++
++
++_TIDLMATFODAPISSD = _descriptor.Descriptor(
++  name='TidlMaTfOdApiSsd',
++  full_name='tidl_meta_arch.TidlMaTfOdApiSsd',
++  filename=None,
++  file=DESCRIPTOR,
++  containing_type=None,
++  create_key=_descriptor._internal_create_key,
++  fields=[
++    _descriptor.FieldDescriptor(
++      name='name', full_name='tidl_meta_arch.TidlMaTfOdApiSsd.name', index=0,
++      number=1, type=9, cpp_type=9, label=1,
++      has_default_value=False, default_value=b"".decode('utf-8'),
++      message_type=None, enum_type=None, containing_type=None,
++      is_extension=False, extension_scope=None,
++      serialized_options=None, file=DESCRIPTOR,  create_key=_descriptor._internal_create_key),
++  ],
++  extensions=[
++  ],
++  nested_types=[],
++  enum_types=[
++  ],
++  serialized_options=None,
++  is_extendable=False,
++  syntax='proto2',
++  extension_ranges=[],
++  oneofs=[
++  ],
++  serialized_start=2646,
++  serialized_end=2678,
++)
++
++
++_TIDLMAFASTERRCNN = _descriptor.Descriptor(
++  name='TidlMaFasterRcnn',
++  full_name='tidl_meta_arch.TidlMaFasterRcnn',
++  filename=None,
++  file=DESCRIPTOR,
++  containing_type=None,
++  create_key=_descriptor._internal_create_key,
++  fields=[
++    _descriptor.FieldDescriptor(
++      name='name', full_name='tidl_meta_arch.TidlMaFasterRcnn.name', index=0,
++      number=1, type=9, cpp_type=9, label=1,
++      has_default_value=False, default_value=b"".decode('utf-8'),
++      message_type=None, enum_type=None, containing_type=None,
++      is_extension=False, extension_scope=None,
++      serialized_options=None, file=DESCRIPTOR,  create_key=_descriptor._internal_create_key),
++  ],
++  extensions=[
++  ],
++  nested_types=[],
++  enum_types=[
++  ],
++  serialized_options=None,
++  is_extendable=False,
++  syntax='proto2',
++  extension_ranges=[],
++  oneofs=[
++  ],
++  serialized_start=2680,
++  serialized_end=2712,
++)
++
++
++_TIDLYOLOOD = _descriptor.Descriptor(
++  name='TidlYoloOd',
++  full_name='tidl_meta_arch.TidlYoloOd',
++  filename=None,
++  file=DESCRIPTOR,
++  containing_type=None,
++  create_key=_descriptor._internal_create_key,
++  fields=[
++    _descriptor.FieldDescriptor(
++      name='yolo_param', full_name='tidl_meta_arch.TidlYoloOd.yolo_param', index=0,
++      number=1, type=11, cpp_type=10, label=3,
++      has_default_value=False, default_value=[],
++      message_type=None, enum_type=None, containing_type=None,
++      is_extension=False, extension_scope=None,
++      serialized_options=None, file=DESCRIPTOR,  create_key=_descriptor._internal_create_key),
++    _descriptor.FieldDescriptor(
++      name='detection_output_param', full_name='tidl_meta_arch.TidlYoloOd.detection_output_param', index=1,
++      number=2, type=11, cpp_type=10, label=2,
++      has_default_value=False, default_value=None,
++      message_type=None, enum_type=None, containing_type=None,
++      is_extension=False, extension_scope=None,
++      serialized_options=None, file=DESCRIPTOR,  create_key=_descriptor._internal_create_key),
++    _descriptor.FieldDescriptor(
++      name='name', full_name='tidl_meta_arch.TidlYoloOd.name', index=2,
++      number=3, type=9, cpp_type=9, label=2,
++      has_default_value=False, default_value=b"".decode('utf-8'),
++      message_type=None, enum_type=None, containing_type=None,
++      is_extension=False, extension_scope=None,
++      serialized_options=None, file=DESCRIPTOR,  create_key=_descriptor._internal_create_key),
++    _descriptor.FieldDescriptor(
++      name='in_width', full_name='tidl_meta_arch.TidlYoloOd.in_width', index=3,
++      number=4, type=13, cpp_type=3, label=2,
++      has_default_value=False, default_value=0,
++      message_type=None, enum_type=None, containing_type=None,
++      is_extension=False, extension_scope=None,
++      serialized_options=None, file=DESCRIPTOR,  create_key=_descriptor._internal_create_key),
++    _descriptor.FieldDescriptor(
++      name='in_height', full_name='tidl_meta_arch.TidlYoloOd.in_height', index=4,
++      number=5, type=13, cpp_type=3, label=2,
++      has_default_value=False, default_value=0,
++      message_type=None, enum_type=None, containing_type=None,
++      is_extension=False, extension_scope=None,
++      serialized_options=None, file=DESCRIPTOR,  create_key=_descriptor._internal_create_key),
++    _descriptor.FieldDescriptor(
++      name='output', full_name='tidl_meta_arch.TidlYoloOd.output', index=5,
++      number=6, type=9, cpp_type=9, label=3,
++      has_default_value=False, default_value=[],
++      message_type=None, enum_type=None, containing_type=None,
++      is_extension=False, extension_scope=None,
++      serialized_options=None, file=DESCRIPTOR,  create_key=_descriptor._internal_create_key),
++    _descriptor.FieldDescriptor(
++      name='framework', full_name='tidl_meta_arch.TidlYoloOd.framework', index=6,
++      number=7, type=9, cpp_type=9, label=1,
++      has_default_value=False, default_value=b"".decode('utf-8'),
++      message_type=None, enum_type=None, containing_type=None,
++      is_extension=False, extension_scope=None,
++      serialized_options=None, file=DESCRIPTOR,  create_key=_descriptor._internal_create_key),
++  ],
++  extensions=[
++  ],
++  nested_types=[],
++  enum_types=[
++  ],
++  serialized_options=None,
++  is_extendable=False,
++  syntax='proto2',
++  extension_ranges=[],
++  oneofs=[
++  ],
++  serialized_start=2715,
++  serialized_end=2929,
++)
++
++
++_TIDLYOLOPARAMS = _descriptor.Descriptor(
++  name='TIDLYoloParams',
++  full_name='tidl_meta_arch.TIDLYoloParams',
++  filename=None,
++  file=DESCRIPTOR,
++  containing_type=None,
++  create_key=_descriptor._internal_create_key,
++  fields=[
++    _descriptor.FieldDescriptor(
++      name='input', full_name='tidl_meta_arch.TIDLYoloParams.input', index=0,
++      number=1, type=9, cpp_type=9, label=2,
++      has_default_value=False, default_value=b"".decode('utf-8'),
++      message_type=None, enum_type=None, containing_type=None,
++      is_extension=False, extension_scope=None,
++      serialized_options=None, file=DESCRIPTOR,  create_key=_descriptor._internal_create_key),
++    _descriptor.FieldDescriptor(
++      name='anchor_width', full_name='tidl_meta_arch.TIDLYoloParams.anchor_width', index=1,
++      number=2, type=2, cpp_type=6, label=3,
++      has_default_value=False, default_value=[],
++      message_type=None, enum_type=None, containing_type=None,
++      is_extension=False, extension_scope=None,
++      serialized_options=None, file=DESCRIPTOR,  create_key=_descriptor._internal_create_key),
++    _descriptor.FieldDescriptor(
++      name='anchor_height', full_name='tidl_meta_arch.TIDLYoloParams.anchor_height', index=2,
++      number=3, type=2, cpp_type=6, label=3,
++      has_default_value=False, default_value=[],
++      message_type=None, enum_type=None, containing_type=None,
++      is_extension=False, extension_scope=None,
++      serialized_options=None, file=DESCRIPTOR,  create_key=_descriptor._internal_create_key),
++  ],
++  extensions=[
++  ],
++  nested_types=[],
++  enum_types=[
++  ],
++  serialized_options=None,
++  is_extendable=False,
++  syntax='proto2',
++  extension_ranges=[],
++  oneofs=[
++  ],
++  serialized_start=2931,
++  serialized_end=3007,
++)
++
++
++_RETINANETANCHORPARAMETER = _descriptor.Descriptor(
++  name='RetinaNetAnchorParameter',
++  full_name='tidl_meta_arch.RetinaNetAnchorParameter',
++  filename=None,
++  file=DESCRIPTOR,
++  containing_type=None,
++  create_key=_descriptor._internal_create_key,
++  fields=[
++    _descriptor.FieldDescriptor(
++      name='aspect_ratio', full_name='tidl_meta_arch.RetinaNetAnchorParameter.aspect_ratio', index=0,
++      number=1, type=2, cpp_type=6, label=3,
++      has_default_value=False, default_value=[],
++      message_type=None, enum_type=None, containing_type=None,
++      is_extension=False, extension_scope=None,
++      serialized_options=None, file=DESCRIPTOR,  create_key=_descriptor._internal_create_key),
++    _descriptor.FieldDescriptor(
++      name='octave_base_scale', full_name='tidl_meta_arch.RetinaNetAnchorParameter.octave_base_scale', index=1,
++      number=2, type=2, cpp_type=6, label=2,
++      has_default_value=False, default_value=float(0),
++      message_type=None, enum_type=None, containing_type=None,
++      is_extension=False, extension_scope=None,
++      serialized_options=None, file=DESCRIPTOR,  create_key=_descriptor._internal_create_key),
++    _descriptor.FieldDescriptor(
++      name='scales_per_octave', full_name='tidl_meta_arch.RetinaNetAnchorParameter.scales_per_octave', index=2,
++      number=3, type=13, cpp_type=3, label=2,
++      has_default_value=False, default_value=0,
++      message_type=None, enum_type=None, containing_type=None,
++      is_extension=False, extension_scope=None,
++      serialized_options=None, file=DESCRIPTOR,  create_key=_descriptor._internal_create_key),
++  ],
++  extensions=[
++  ],
++  nested_types=[],
++  enum_types=[
++  ],
++  serialized_options=None,
++  is_extendable=False,
++  syntax='proto2',
++  extension_ranges=[],
++  oneofs=[
++  ],
++  serialized_start=3009,
++  serialized_end=3111,
++)
++
++
++_TIDLMARETINANET = _descriptor.Descriptor(
++  name='TidlMaRetinaNet',
++  full_name='tidl_meta_arch.TidlMaRetinaNet',
++  filename=None,
++  file=DESCRIPTOR,
++  containing_type=None,
++  create_key=_descriptor._internal_create_key,
++  fields=[
++    _descriptor.FieldDescriptor(
++      name='box_input', full_name='tidl_meta_arch.TidlMaRetinaNet.box_input', index=0,
++      number=1, type=9, cpp_type=9, label=3,
++      has_default_value=False, default_value=[],
++      message_type=None, enum_type=None, containing_type=None,
++      is_extension=False, extension_scope=None,
++      serialized_options=None, file=DESCRIPTOR,  create_key=_descriptor._internal_create_key),
++    _descriptor.FieldDescriptor(
++      name='class_input', full_name='tidl_meta_arch.TidlMaRetinaNet.class_input', index=1,
++      number=2, type=9, cpp_type=9, label=3,
++      has_default_value=False, default_value=[],
++      message_type=None, enum_type=None, containing_type=None,
++      is_extension=False, extension_scope=None,
++      serialized_options=None, file=DESCRIPTOR,  create_key=_descriptor._internal_create_key),
++    _descriptor.FieldDescriptor(
++      name='output', full_name='tidl_meta_arch.TidlMaRetinaNet.output', index=2,
++      number=3, type=9, cpp_type=9, label=3,
++      has_default_value=False, default_value=[],
++      message_type=None, enum_type=None, containing_type=None,
++      is_extension=False, extension_scope=None,
++      serialized_options=None, file=DESCRIPTOR,  create_key=_descriptor._internal_create_key),
++    _descriptor.FieldDescriptor(
++      name='name', full_name='tidl_meta_arch.TidlMaRetinaNet.name', index=3,
++      number=4, type=9, cpp_type=9, label=1,
++      has_default_value=False, default_value=b"".decode('utf-8'),
++      message_type=None, enum_type=None, containing_type=None,
++      is_extension=False, extension_scope=None,
++      serialized_options=None, file=DESCRIPTOR,  create_key=_descriptor._internal_create_key),
++    _descriptor.FieldDescriptor(
++      name='in_width', full_name='tidl_meta_arch.TidlMaRetinaNet.in_width', index=4,
++      number=5, type=13, cpp_type=3, label=2,
++      has_default_value=False, default_value=0,
++      message_type=None, enum_type=None, containing_type=None,
++      is_extension=False, extension_scope=None,
++      serialized_options=None, file=DESCRIPTOR,  create_key=_descriptor._internal_create_key),
++    _descriptor.FieldDescriptor(
++      name='in_height', full_name='tidl_meta_arch.TidlMaRetinaNet.in_height', index=5,
++      number=6, type=13, cpp_type=3, label=2,
++      has_default_value=False, default_value=0,
++      message_type=None, enum_type=None, containing_type=None,
++      is_extension=False, extension_scope=None,
++      serialized_options=None, file=DESCRIPTOR,  create_key=_descriptor._internal_create_key),
++    _descriptor.FieldDescriptor(
++      name='anchorbox_order', full_name='tidl_meta_arch.TidlMaRetinaNet.anchorbox_order', index=6,
++      number=16, type=13, cpp_type=3, label=1,
++      has_default_value=True, default_value=0,
++      message_type=None, enum_type=None, containing_type=None,
++      is_extension=False, extension_scope=None,
++      serialized_options=None, file=DESCRIPTOR,  create_key=_descriptor._internal_create_key),
++    _descriptor.FieldDescriptor(
++      name='x_scale', full_name='tidl_meta_arch.TidlMaRetinaNet.x_scale', index=7,
++      number=7, type=2, cpp_type=6, label=1,
++      has_default_value=True, default_value=float(10),
++      message_type=None, enum_type=None, containing_type=None,
++      is_extension=False, extension_scope=None,
++      serialized_options=None, file=DESCRIPTOR,  create_key=_descriptor._internal_create_key),
++    _descriptor.FieldDescriptor(
++      name='y_scale', full_name='tidl_meta_arch.TidlMaRetinaNet.y_scale', index=8,
++      number=8, type=2, cpp_type=6, label=1,
++      has_default_value=True, default_value=float(10),
++      message_type=None, enum_type=None, containing_type=None,
++      is_extension=False, extension_scope=None,
++      serialized_options=None, file=DESCRIPTOR,  create_key=_descriptor._internal_create_key),
++    _descriptor.FieldDescriptor(
++      name='x_offset', full_name='tidl_meta_arch.TidlMaRetinaNet.x_offset', index=9,
++      number=14, type=2, cpp_type=6, label=1,
++      has_default_value=True, default_value=float(0),
++      message_type=None, enum_type=None, containing_type=None,
++      is_extension=False, extension_scope=None,
++      serialized_options=None, file=DESCRIPTOR,  create_key=_descriptor._internal_create_key),
++    _descriptor.FieldDescriptor(
++      name='y_offset', full_name='tidl_meta_arch.TidlMaRetinaNet.y_offset', index=10,
++      number=15, type=2, cpp_type=6, label=1,
++      has_default_value=True, default_value=float(0),
++      message_type=None, enum_type=None, containing_type=None,
++      is_extension=False, extension_scope=None,
++      serialized_options=None, file=DESCRIPTOR,  create_key=_descriptor._internal_create_key),
++    _descriptor.FieldDescriptor(
++      name='width_scale', full_name='tidl_meta_arch.TidlMaRetinaNet.width_scale', index=11,
++      number=9, type=2, cpp_type=6, label=1,
++      has_default_value=True, default_value=float(5),
++      message_type=None, enum_type=None, containing_type=None,
++      is_extension=False, extension_scope=None,
++      serialized_options=None, file=DESCRIPTOR,  create_key=_descriptor._internal_create_key),
++    _descriptor.FieldDescriptor(
++      name='height_scale', full_name='tidl_meta_arch.TidlMaRetinaNet.height_scale', index=12,
++      number=10, type=2, cpp_type=6, label=1,
++      has_default_value=True, default_value=float(5),
++      message_type=None, enum_type=None, containing_type=None,
++      is_extension=False, extension_scope=None,
++      serialized_options=None, file=DESCRIPTOR,  create_key=_descriptor._internal_create_key),
++    _descriptor.FieldDescriptor(
++      name='score_converter', full_name='tidl_meta_arch.TidlMaRetinaNet.score_converter', index=13,
++      number=11, type=14, cpp_type=8, label=1,
++      has_default_value=True, default_value=2,
++      message_type=None, enum_type=None, containing_type=None,
++      is_extension=False, extension_scope=None,
++      serialized_options=None, file=DESCRIPTOR,  create_key=_descriptor._internal_create_key),
++    _descriptor.FieldDescriptor(
++      name='anchor_param', full_name='tidl_meta_arch.TidlMaRetinaNet.anchor_param', index=14,
++      number=12, type=11, cpp_type=10, label=2,
++      has_default_value=False, default_value=None,
++      message_type=None, enum_type=None, containing_type=None,
++      is_extension=False, extension_scope=None,
++      serialized_options=None, file=DESCRIPTOR,  create_key=_descriptor._internal_create_key),
++    _descriptor.FieldDescriptor(
++      name='detection_output_param', full_name='tidl_meta_arch.TidlMaRetinaNet.detection_output_param', index=15,
++      number=13, type=11, cpp_type=10, label=2,
++      has_default_value=False, default_value=None,
++      message_type=None, enum_type=None, containing_type=None,
++      is_extension=False, extension_scope=None,
++      serialized_options=None, file=DESCRIPTOR,  create_key=_descriptor._internal_create_key),
++    _descriptor.FieldDescriptor(
++      name='framework', full_name='tidl_meta_arch.TidlMaRetinaNet.framework', index=16,
++      number=17, type=9, cpp_type=9, label=1,
++      has_default_value=False, default_value=b"".decode('utf-8'),
++      message_type=None, enum_type=None, containing_type=None,
++      is_extension=False, extension_scope=None,
++      serialized_options=None, file=DESCRIPTOR,  create_key=_descriptor._internal_create_key),
++  ],
++  extensions=[
++  ],
++  nested_types=[],
++  enum_types=[
++  ],
++  serialized_options=None,
++  is_extendable=False,
++  syntax='proto2',
++  extension_ranges=[],
++  oneofs=[
++  ],
++  serialized_start=3114,
++  serialized_end=3616,
++)
++
++
++_TIDLMA3DOD = _descriptor.Descriptor(
++  name='TidlMa3DOD',
++  full_name='tidl_meta_arch.TidlMa3DOD',
++  filename=None,
++  file=DESCRIPTOR,
++  containing_type=None,
++  create_key=_descriptor._internal_create_key,
++  fields=[
++    _descriptor.FieldDescriptor(
++      name='box_input', full_name='tidl_meta_arch.TidlMa3DOD.box_input', index=0,
++      number=1, type=9, cpp_type=9, label=3,
++      has_default_value=False, default_value=[],
++      message_type=None, enum_type=None, containing_type=None,
++      is_extension=False, extension_scope=None,
++      serialized_options=None, file=DESCRIPTOR,  create_key=_descriptor._internal_create_key),
++    _descriptor.FieldDescriptor(
++      name='class_input', full_name='tidl_meta_arch.TidlMa3DOD.class_input', index=1,
++      number=2, type=9, cpp_type=9, label=3,
++      has_default_value=False, default_value=[],
++      message_type=None, enum_type=None, containing_type=None,
++      is_extension=False, extension_scope=None,
++      serialized_options=None, file=DESCRIPTOR,  create_key=_descriptor._internal_create_key),
++    _descriptor.FieldDescriptor(
++      name='dir_input', full_name='tidl_meta_arch.TidlMa3DOD.dir_input', index=2,
++      number=3, type=9, cpp_type=9, label=3,
++      has_default_value=False, default_value=[],
++      message_type=None, enum_type=None, containing_type=None,
++      is_extension=False, extension_scope=None,
++      serialized_options=None, file=DESCRIPTOR,  create_key=_descriptor._internal_create_key),
++    _descriptor.FieldDescriptor(
++      name='output', full_name='tidl_meta_arch.TidlMa3DOD.output', index=3,
++      number=4, type=9, cpp_type=9, label=3,
++      has_default_value=False, default_value=[],
++      message_type=None, enum_type=None, containing_type=None,
++      is_extension=False, extension_scope=None,
++      serialized_options=None, file=DESCRIPTOR,  create_key=_descriptor._internal_create_key),
++    _descriptor.FieldDescriptor(
++      name='name', full_name='tidl_meta_arch.TidlMa3DOD.name', index=4,
++      number=5, type=9, cpp_type=9, label=1,
++      has_default_value=False, default_value=b"".decode('utf-8'),
++      message_type=None, enum_type=None, containing_type=None,
++      is_extension=False, extension_scope=None,
++      serialized_options=None, file=DESCRIPTOR,  create_key=_descriptor._internal_create_key),
++    _descriptor.FieldDescriptor(
++      name='min_x', full_name='tidl_meta_arch.TidlMa3DOD.min_x', index=5,
++      number=6, type=2, cpp_type=6, label=2,
++      has_default_value=False, default_value=float(0),
++      message_type=None, enum_type=None, containing_type=None,
++      is_extension=False, extension_scope=None,
++      serialized_options=None, file=DESCRIPTOR,  create_key=_descriptor._internal_create_key),
++    _descriptor.FieldDescriptor(
++      name='max_x', full_name='tidl_meta_arch.TidlMa3DOD.max_x', index=6,
++      number=7, type=2, cpp_type=6, label=2,
++      has_default_value=False, default_value=float(0),
++      message_type=None, enum_type=None, containing_type=None,
++      is_extension=False, extension_scope=None,
++      serialized_options=None, file=DESCRIPTOR,  create_key=_descriptor._internal_create_key),
++    _descriptor.FieldDescriptor(
++      name='min_y', full_name='tidl_meta_arch.TidlMa3DOD.min_y', index=7,
++      number=8, type=2, cpp_type=6, label=2,
++      has_default_value=False, default_value=float(0),
++      message_type=None, enum_type=None, containing_type=None,
++      is_extension=False, extension_scope=None,
++      serialized_options=None, file=DESCRIPTOR,  create_key=_descriptor._internal_create_key),
++    _descriptor.FieldDescriptor(
++      name='max_y', full_name='tidl_meta_arch.TidlMa3DOD.max_y', index=8,
++      number=9, type=2, cpp_type=6, label=2,
++      has_default_value=False, default_value=float(0),
++      message_type=None, enum_type=None, containing_type=None,
++      is_extension=False, extension_scope=None,
++      serialized_options=None, file=DESCRIPTOR,  create_key=_descriptor._internal_create_key),
++    _descriptor.FieldDescriptor(
++      name='min_z', full_name='tidl_meta_arch.TidlMa3DOD.min_z', index=9,
++      number=10, type=2, cpp_type=6, label=2,
++      has_default_value=False, default_value=float(0),
++      message_type=None, enum_type=None, containing_type=None,
++      is_extension=False, extension_scope=None,
++      serialized_options=None, file=DESCRIPTOR,  create_key=_descriptor._internal_create_key),
++    _descriptor.FieldDescriptor(
++      name='max_z', full_name='tidl_meta_arch.TidlMa3DOD.max_z', index=10,
++      number=11, type=2, cpp_type=6, label=2,
++      has_default_value=False, default_value=float(0),
++      message_type=None, enum_type=None, containing_type=None,
++      is_extension=False, extension_scope=None,
++      serialized_options=None, file=DESCRIPTOR,  create_key=_descriptor._internal_create_key),
++    _descriptor.FieldDescriptor(
++      name='voxel_size_x', full_name='tidl_meta_arch.TidlMa3DOD.voxel_size_x', index=11,
++      number=12, type=2, cpp_type=6, label=2,
++      has_default_value=False, default_value=float(0),
++      message_type=None, enum_type=None, containing_type=None,
++      is_extension=False, extension_scope=None,
++      serialized_options=None, file=DESCRIPTOR,  create_key=_descriptor._internal_create_key),
++    _descriptor.FieldDescriptor(
++      name='voxel_size_y', full_name='tidl_meta_arch.TidlMa3DOD.voxel_size_y', index=12,
++      number=13, type=2, cpp_type=6, label=2,
++      has_default_value=False, default_value=float(0),
++      message_type=None, enum_type=None, containing_type=None,
++      is_extension=False, extension_scope=None,
++      serialized_options=None, file=DESCRIPTOR,  create_key=_descriptor._internal_create_key),
++    _descriptor.FieldDescriptor(
++      name='voxel_size_z', full_name='tidl_meta_arch.TidlMa3DOD.voxel_size_z', index=13,
++      number=14, type=2, cpp_type=6, label=2,
++      has_default_value=False, default_value=float(0),
++      message_type=None, enum_type=None, containing_type=None,
++      is_extension=False, extension_scope=None,
++      serialized_options=None, file=DESCRIPTOR,  create_key=_descriptor._internal_create_key),
++    _descriptor.FieldDescriptor(
++      name='max_points_per_voxel', full_name='tidl_meta_arch.TidlMa3DOD.max_points_per_voxel', index=14,
++      number=15, type=13, cpp_type=3, label=2,
++      has_default_value=False, default_value=0,
++      message_type=None, enum_type=None, containing_type=None,
++      is_extension=False, extension_scope=None,
++      serialized_options=None, file=DESCRIPTOR,  create_key=_descriptor._internal_create_key),
++    _descriptor.FieldDescriptor(
++      name='score_converter', full_name='tidl_meta_arch.TidlMa3DOD.score_converter', index=15,
++      number=16, type=14, cpp_type=8, label=1,
++      has_default_value=True, default_value=1,
++      message_type=None, enum_type=None, containing_type=None,
++      is_extension=False, extension_scope=None,
++      serialized_options=None, file=DESCRIPTOR,  create_key=_descriptor._internal_create_key),
++    _descriptor.FieldDescriptor(
++      name='prior_box_3dod_param', full_name='tidl_meta_arch.TidlMa3DOD.prior_box_3dod_param', index=16,
++      number=17, type=11, cpp_type=10, label=3,
++      has_default_value=False, default_value=[],
++      message_type=None, enum_type=None, containing_type=None,
++      is_extension=False, extension_scope=None,
++      serialized_options=None, file=DESCRIPTOR,  create_key=_descriptor._internal_create_key),
++    _descriptor.FieldDescriptor(
++      name='detection_output_param', full_name='tidl_meta_arch.TidlMa3DOD.detection_output_param', index=17,
++      number=18, type=11, cpp_type=10, label=1,
++      has_default_value=False, default_value=None,
++      message_type=None, enum_type=None, containing_type=None,
++      is_extension=False, extension_scope=None,
++      serialized_options=None, file=DESCRIPTOR,  create_key=_descriptor._internal_create_key),
++    _descriptor.FieldDescriptor(
++      name='data_layout', full_name='tidl_meta_arch.TidlMa3DOD.data_layout', index=18,
++      number=19, type=14, cpp_type=8, label=1,
++      has_default_value=True, default_value=0,
++      message_type=None, enum_type=None, containing_type=None,
++      is_extension=False, extension_scope=None,
++      serialized_options=None, file=DESCRIPTOR,  create_key=_descriptor._internal_create_key),
++  ],
++  extensions=[
++  ],
++  nested_types=[],
++  enum_types=[
++  ],
++  serialized_options=None,
++  is_extendable=False,
++  syntax='proto2',
++  extension_ranges=[],
++  oneofs=[
++  ],
++  serialized_start=3619,
++  serialized_end=4179,
++)
++
++
++_TIDLCAMERAINTRINSICPARAMS = _descriptor.Descriptor(
++  name='TIDLCameraIntrinsicParams',
++  full_name='tidl_meta_arch.TIDLCameraIntrinsicParams',
++  filename=None,
++  file=DESCRIPTOR,
++  containing_type=None,
++  create_key=_descriptor._internal_create_key,
++  fields=[
++    _descriptor.FieldDescriptor(
++      name='fx', full_name='tidl_meta_arch.TIDLCameraIntrinsicParams.fx', index=0,
++      number=1, type=2, cpp_type=6, label=1,
++      has_default_value=True, default_value=float(1),
++      message_type=None, enum_type=None, containing_type=None,
++      is_extension=False, extension_scope=None,
++      serialized_options=None, file=DESCRIPTOR,  create_key=_descriptor._internal_create_key),
++    _descriptor.FieldDescriptor(
++      name='fy', full_name='tidl_meta_arch.TIDLCameraIntrinsicParams.fy', index=1,
++      number=2, type=2, cpp_type=6, label=1,
++      has_default_value=True, default_value=float(1),
++      message_type=None, enum_type=None, containing_type=None,
++      is_extension=False, extension_scope=None,
++      serialized_options=None, file=DESCRIPTOR,  create_key=_descriptor._internal_create_key),
++    _descriptor.FieldDescriptor(
++      name='px', full_name='tidl_meta_arch.TIDLCameraIntrinsicParams.px', index=2,
++      number=3, type=2, cpp_type=6, label=1,
++      has_default_value=True, default_value=float(0),
++      message_type=None, enum_type=None, containing_type=None,
++      is_extension=False, extension_scope=None,
++      serialized_options=None, file=DESCRIPTOR,  create_key=_descriptor._internal_create_key),
++    _descriptor.FieldDescriptor(
++      name='py', full_name='tidl_meta_arch.TIDLCameraIntrinsicParams.py', index=3,
++      number=4, type=2, cpp_type=6, label=1,
++      has_default_value=True, default_value=float(0),
++      message_type=None, enum_type=None, containing_type=None,
++      is_extension=False, extension_scope=None,
++      serialized_options=None, file=DESCRIPTOR,  create_key=_descriptor._internal_create_key),
++  ],
++  extensions=[
++  ],
++  nested_types=[],
++  enum_types=[
++  ],
++  serialized_options=None,
++  is_extendable=False,
++  syntax='proto2',
++  extension_ranges=[],
++  oneofs=[
++  ],
++  serialized_start=4181,
++  serialized_end=4268,
++)
++
++_TIDLMETAARCH.fields_by_name['caffe_ssd'].message_type = _TIDLMACAFFESSD
++_TIDLMETAARCH.fields_by_name['tf_od_api_ssd'].message_type = _TIDLMATFODAPISSD
++_TIDLMETAARCH.fields_by_name['tidl_ssd'].message_type = _TIDLMASSD
++_TIDLMETAARCH.fields_by_name['tidl_faster_rcnn'].message_type = _TIDLMAFASTERRCNN
++_TIDLMETAARCH.fields_by_name['tidl_yolo'].message_type = _TIDLYOLOOD
++_TIDLMETAARCH.fields_by_name['tidl_retinanet'].message_type = _TIDLMARETINANET
++_TIDLMETAARCH.fields_by_name['tidl_3dod'].message_type = _TIDLMA3DOD
++_TIDLODPOSTPROC.fields_by_name['nms_param'].message_type = _TIDLNMSPARAM
++_TIDLODPOSTPROC.fields_by_name['save_output_param'].message_type = _TIDLODSAVEPARAMS
++_TIDLODPOSTPROC.fields_by_name['code_type'].enum_type = _TIDLBOXCODETYPE
++_TIDLODPOSTPROC.fields_by_name['camera_intrinsic_params'].message_type = _TIDLCAMERAINTRINSICPARAMS
++_TIDLMASSD.fields_by_name['score_converter'].enum_type = _TIDLSCORECONVERTER
++_TIDLMASSD.fields_by_name['prior_box_param'].message_type = _PRIORBOXPARAMETER
++_TIDLMASSD.fields_by_name['detection_output_param'].message_type = _TIDLODPOSTPROC
++_TIDLMASSD.fields_by_name['data_layout'].enum_type = _TIDLANCHORDATALAYOUT
++_TIDLMACAFFESSD.fields_by_name['score_converter'].enum_type = _TIDLSCORECONVERTER
++_TIDLMACAFFESSD.fields_by_name['prior_box_param'].message_type = _PRIORBOXPARAMETER
++_TIDLMACAFFESSD.fields_by_name['detection_output_param'].message_type = _TIDLODPOSTPROC
++_TIDLMACAFFESSD.fields_by_name['data_layout'].enum_type = _TIDLANCHORDATALAYOUT
++_TIDLYOLOOD.fields_by_name['yolo_param'].message_type = _TIDLYOLOPARAMS
++_TIDLYOLOOD.fields_by_name['detection_output_param'].message_type = _TIDLODPOSTPROC
++_TIDLMARETINANET.fields_by_name['score_converter'].enum_type = _TIDLSCORECONVERTER
++_TIDLMARETINANET.fields_by_name['anchor_param'].message_type = _RETINANETANCHORPARAMETER
++_TIDLMARETINANET.fields_by_name['detection_output_param'].message_type = _TIDLODPOSTPROC
++_TIDLMA3DOD.fields_by_name['score_converter'].enum_type = _TIDLSCORECONVERTER
++_TIDLMA3DOD.fields_by_name['prior_box_3dod_param'].message_type = _PRIORBOX3DODPARAMETER
++_TIDLMA3DOD.fields_by_name['detection_output_param'].message_type = _TIDLODPOSTPROC
++_TIDLMA3DOD.fields_by_name['data_layout'].enum_type = _TIDLANCHORDATALAYOUT
++DESCRIPTOR.message_types_by_name['TIDLMetaArch'] = _TIDLMETAARCH
++DESCRIPTOR.message_types_by_name['TIDLNmsParam'] = _TIDLNMSPARAM
++DESCRIPTOR.message_types_by_name['PriorBoxParameter'] = _PRIORBOXPARAMETER
++DESCRIPTOR.message_types_by_name['PriorBox3DODParameter'] = _PRIORBOX3DODPARAMETER
++DESCRIPTOR.message_types_by_name['TIDLOdSaveParams'] = _TIDLODSAVEPARAMS
++DESCRIPTOR.message_types_by_name['TIDLOdPostProc'] = _TIDLODPOSTPROC
++DESCRIPTOR.message_types_by_name['TidlMaSsd'] = _TIDLMASSD
++DESCRIPTOR.message_types_by_name['TidlMaCaffeSsd'] = _TIDLMACAFFESSD
++DESCRIPTOR.message_types_by_name['TidlMaTfOdApiSsd'] = _TIDLMATFODAPISSD
++DESCRIPTOR.message_types_by_name['TidlMaFasterRcnn'] = _TIDLMAFASTERRCNN
++DESCRIPTOR.message_types_by_name['TidlYoloOd'] = _TIDLYOLOOD
++DESCRIPTOR.message_types_by_name['TIDLYoloParams'] = _TIDLYOLOPARAMS
++DESCRIPTOR.message_types_by_name['RetinaNetAnchorParameter'] = _RETINANETANCHORPARAMETER
++DESCRIPTOR.message_types_by_name['TidlMaRetinaNet'] = _TIDLMARETINANET
++DESCRIPTOR.message_types_by_name['TidlMa3DOD'] = _TIDLMA3DOD
++DESCRIPTOR.message_types_by_name['TIDLCameraIntrinsicParams'] = _TIDLCAMERAINTRINSICPARAMS
++DESCRIPTOR.enum_types_by_name['TIDLBoxCodeType'] = _TIDLBOXCODETYPE
++DESCRIPTOR.enum_types_by_name['TIDLScoreConverter'] = _TIDLSCORECONVERTER
++DESCRIPTOR.enum_types_by_name['TIDLAnchorDataLayout'] = _TIDLANCHORDATALAYOUT
++_sym_db.RegisterFileDescriptor(DESCRIPTOR)
++
++TIDLMetaArch = _reflection.GeneratedProtocolMessageType('TIDLMetaArch', (_message.Message,), {
++  'DESCRIPTOR' : _TIDLMETAARCH,
++  '__module__' : 'mmyolo_meta_arch_pb2'
++  # @@protoc_insertion_point(class_scope:tidl_meta_arch.TIDLMetaArch)
++  })
++_sym_db.RegisterMessage(TIDLMetaArch)
++
++TIDLNmsParam = _reflection.GeneratedProtocolMessageType('TIDLNmsParam', (_message.Message,), {
++  'DESCRIPTOR' : _TIDLNMSPARAM,
++  '__module__' : 'mmyolo_meta_arch_pb2'
++  # @@protoc_insertion_point(class_scope:tidl_meta_arch.TIDLNmsParam)
++  })
++_sym_db.RegisterMessage(TIDLNmsParam)
++
++PriorBoxParameter = _reflection.GeneratedProtocolMessageType('PriorBoxParameter', (_message.Message,), {
++  'DESCRIPTOR' : _PRIORBOXPARAMETER,
++  '__module__' : 'mmyolo_meta_arch_pb2'
++  # @@protoc_insertion_point(class_scope:tidl_meta_arch.PriorBoxParameter)
++  })
++_sym_db.RegisterMessage(PriorBoxParameter)
++
++PriorBox3DODParameter = _reflection.GeneratedProtocolMessageType('PriorBox3DODParameter', (_message.Message,), {
++  'DESCRIPTOR' : _PRIORBOX3DODPARAMETER,
++  '__module__' : 'mmyolo_meta_arch_pb2'
++  # @@protoc_insertion_point(class_scope:tidl_meta_arch.PriorBox3DODParameter)
++  })
++_sym_db.RegisterMessage(PriorBox3DODParameter)
++
++TIDLOdSaveParams = _reflection.GeneratedProtocolMessageType('TIDLOdSaveParams', (_message.Message,), {
++  'DESCRIPTOR' : _TIDLODSAVEPARAMS,
++  '__module__' : 'mmyolo_meta_arch_pb2'
++  # @@protoc_insertion_point(class_scope:tidl_meta_arch.TIDLOdSaveParams)
++  })
++_sym_db.RegisterMessage(TIDLOdSaveParams)
++
++TIDLOdPostProc = _reflection.GeneratedProtocolMessageType('TIDLOdPostProc', (_message.Message,), {
++  'DESCRIPTOR' : _TIDLODPOSTPROC,
++  '__module__' : 'mmyolo_meta_arch_pb2'
++  # @@protoc_insertion_point(class_scope:tidl_meta_arch.TIDLOdPostProc)
++  })
++_sym_db.RegisterMessage(TIDLOdPostProc)
++
++TidlMaSsd = _reflection.GeneratedProtocolMessageType('TidlMaSsd', (_message.Message,), {
++  'DESCRIPTOR' : _TIDLMASSD,
++  '__module__' : 'mmyolo_meta_arch_pb2'
++  # @@protoc_insertion_point(class_scope:tidl_meta_arch.TidlMaSsd)
++  })
++_sym_db.RegisterMessage(TidlMaSsd)
++
++TidlMaCaffeSsd = _reflection.GeneratedProtocolMessageType('TidlMaCaffeSsd', (_message.Message,), {
++  'DESCRIPTOR' : _TIDLMACAFFESSD,
++  '__module__' : 'mmyolo_meta_arch_pb2'
++  # @@protoc_insertion_point(class_scope:tidl_meta_arch.TidlMaCaffeSsd)
++  })
++_sym_db.RegisterMessage(TidlMaCaffeSsd)
++
++TidlMaTfOdApiSsd = _reflection.GeneratedProtocolMessageType('TidlMaTfOdApiSsd', (_message.Message,), {
++  'DESCRIPTOR' : _TIDLMATFODAPISSD,
++  '__module__' : 'mmyolo_meta_arch_pb2'
++  # @@protoc_insertion_point(class_scope:tidl_meta_arch.TidlMaTfOdApiSsd)
++  })
++_sym_db.RegisterMessage(TidlMaTfOdApiSsd)
++
++TidlMaFasterRcnn = _reflection.GeneratedProtocolMessageType('TidlMaFasterRcnn', (_message.Message,), {
++  'DESCRIPTOR' : _TIDLMAFASTERRCNN,
++  '__module__' : 'mmyolo_meta_arch_pb2'
++  # @@protoc_insertion_point(class_scope:tidl_meta_arch.TidlMaFasterRcnn)
++  })
++_sym_db.RegisterMessage(TidlMaFasterRcnn)
++
++TidlYoloOd = _reflection.GeneratedProtocolMessageType('TidlYoloOd', (_message.Message,), {
++  'DESCRIPTOR' : _TIDLYOLOOD,
++  '__module__' : 'mmyolo_meta_arch_pb2'
++  # @@protoc_insertion_point(class_scope:tidl_meta_arch.TidlYoloOd)
++  })
++_sym_db.RegisterMessage(TidlYoloOd)
++
++TIDLYoloParams = _reflection.GeneratedProtocolMessageType('TIDLYoloParams', (_message.Message,), {
++  'DESCRIPTOR' : _TIDLYOLOPARAMS,
++  '__module__' : 'mmyolo_meta_arch_pb2'
++  # @@protoc_insertion_point(class_scope:tidl_meta_arch.TIDLYoloParams)
++  })
++_sym_db.RegisterMessage(TIDLYoloParams)
++
++RetinaNetAnchorParameter = _reflection.GeneratedProtocolMessageType('RetinaNetAnchorParameter', (_message.Message,), {
++  'DESCRIPTOR' : _RETINANETANCHORPARAMETER,
++  '__module__' : 'mmyolo_meta_arch_pb2'
++  # @@protoc_insertion_point(class_scope:tidl_meta_arch.RetinaNetAnchorParameter)
++  })
++_sym_db.RegisterMessage(RetinaNetAnchorParameter)
++
++TidlMaRetinaNet = _reflection.GeneratedProtocolMessageType('TidlMaRetinaNet', (_message.Message,), {
++  'DESCRIPTOR' : _TIDLMARETINANET,
++  '__module__' : 'mmyolo_meta_arch_pb2'
++  # @@protoc_insertion_point(class_scope:tidl_meta_arch.TidlMaRetinaNet)
++  })
++_sym_db.RegisterMessage(TidlMaRetinaNet)
++
++TidlMa3DOD = _reflection.GeneratedProtocolMessageType('TidlMa3DOD', (_message.Message,), {
++  'DESCRIPTOR' : _TIDLMA3DOD,
++  '__module__' : 'mmyolo_meta_arch_pb2'
++  # @@protoc_insertion_point(class_scope:tidl_meta_arch.TidlMa3DOD)
++  })
++_sym_db.RegisterMessage(TidlMa3DOD)
++
++TIDLCameraIntrinsicParams = _reflection.GeneratedProtocolMessageType('TIDLCameraIntrinsicParams', (_message.Message,), {
++  'DESCRIPTOR' : _TIDLCAMERAINTRINSICPARAMS,
++  '__module__' : 'mmyolo_meta_arch_pb2'
++  # @@protoc_insertion_point(class_scope:tidl_meta_arch.TIDLCameraIntrinsicParams)
++  })
++_sym_db.RegisterMessage(TIDLCameraIntrinsicParams)
++
++
++# @@protoc_insertion_point(module_scope)
+diff --git a/mmyolo/utils/save_model.py b/mmyolo/utils/save_model.py
+new file mode 100644
+index 0000000..e2b9356
+--- /dev/null
++++ b/mmyolo/utils/save_model.py
+@@ -0,0 +1,332 @@
++# Copyright (c) 2018-2021, Texas Instruments
++# All Rights Reserved.
++#
++# Redistribution and use in source and binary forms, with or without
++# modification, are permitted provided that the following conditions are met:
++#
++# * Redistributions of source code must retain the above copyright notice, this
++#   list of conditions and the following disclaimer.
++#
++# * Redistributions in binary form must reproduce the above copyright notice,
++#   this list of conditions and the following disclaimer in the documentation
++#   and/or other materials provided with the distribution.
++#
++# * Neither the name of the copyright holder nor the names of its
++#   contributors may be used to endorse or promote products derived from
++#   this software without specific prior written permission.
++#
++# THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS"
++# AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
++# IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE
++# DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT HOLDER OR CONTRIBUTORS BE LIABLE
++# FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL
++# DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR
++# SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER
++# CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY,
++# OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
++# OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
++
++import os
++import numpy as np
++import torch
++import onnx
++from .proto import mmyolo_meta_arch_pb2
++from google.protobuf import text_format
++from mmyolo.models.dense_heads import (RTMDetHead, YOLOv5Head, YOLOv7Head, YOLOv8Head, YOLOv6Head,
++                                       YOLOXHead)
++
++
++__all__ = ['save_model_proto']
++
++
++def save_model_proto(model, onnx_model, input, output_filename, input_names=None, feature_names=None, output_names=None,
++                     export_type=None):
++    export_type = export_type or 'MMYOLO' # default is 'MMYOLO'
++    output_filename = os.path.splitext(output_filename)[0] + '.prototxt'
++    input = input[0] if isinstance(input, (list,tuple)) and \
++                                  isinstance(input[0], (torch.Tensor, np.ndarray)) else input
++    input_size = input.size() if isinstance(input, torch.Tensor) else input
++    output_names = output_names or ['num_dets', 'boxes', 'scores', 'labels']
++
++    is_yolov5 = hasattr(model, 'bbox_head') and isinstance(model.bbox_head, YOLOv5Head)
++    is_yolox = hasattr(model, 'bbox_head') and isinstance(model.bbox_head, YOLOXHead)
++    is_yolov6 = hasattr(model, 'bbox_head') and isinstance(model.bbox_head, YOLOv6Head)
++    is_yolov7 = hasattr(model, 'bbox_head') and isinstance(model.bbox_head, YOLOv7Head)
++    is_yolov8 = hasattr(model, 'bbox_head') and isinstance(model.bbox_head, YOLOv8Head)
++    is_yolov5 = False if is_yolov8 or is_yolox or is_yolov6 or is_yolov7 else is_yolov5
++    input_names = input_names or ('input',)
++    if is_yolov5:
++        feature_names = prepare_model_for_layer_outputs(onnx_model, export_layer_types='Conv', match_layer = 'Reshape',
++                                                        return_layer='Conv')
++        _save_mmyolo_proto_yolov5(model, input_size, output_filename, feature_names, output_names, export_type=export_type)
++    elif is_yolox:
++        feature_names = prepare_model_for_layer_outputs(onnx_model, export_layer_types='Conv', match_layer = 'Concat',
++                                                        return_layer='Concat')
++        _save_mmyolo_proto_yolox(model, input_size, output_filename, feature_names, output_names, export_type=export_type)
++    elif is_yolov6:
++        feature_names = prepare_model_for_layer_outputs(onnx_model, export_layer_types='Conv', match_layer = 'Concat',
++                                                        return_layer='Concat')
++        _save_mmyolo_proto_yolov6(model, input_size, output_filename, feature_names, output_names, export_type=export_type)
++    elif is_yolov7:
++        feature_names = prepare_model_for_layer_outputs(onnx_model, export_layer_types='Conv', match_layer = 'Mul',
++                                                        return_layer='Mul')
++        _save_mmyolo_proto_yolov7(model, input_size, output_filename, feature_names, output_names, export_type=export_type)
++    elif is_yolov8:
++        feature_names = prepare_model_for_layer_outputs(onnx_model, export_layer_types='Conv', match_layer = 'Concat',
++                                                        return_layer = 'Conv')
++        _save_mmyolo_proto_yolov8_caffessd_format(model, input_size, output_filename, feature_names, output_names, export_type=export_type)
++
++    return output_filename
++    #
++
++
++###########################################################
++def _create_rand_inputs(input_size, is_cuda=False):
++    x = torch.rand(input_size)
++    x = x.cuda() if is_cuda else x
++    return x
++
++###########################################################
++def _save_mmyolo_onnx(model, input_list, output_filename, input_names=None, proto_names=None, output_names=None,
++                     opset_version=11):
++    #https://github.com/open-mmlab/mmyoloection/pull/1082
++    assert hasattr(model, 'forward_dummy'), 'wrting onnx is not supported by this model'
++    model.eval()
++    os.makedirs(os.path.dirname(output_filename), exist_ok=True)
++    forward_backup = model.forward #backup forward
++    model.forward = model.forward_dummy #set dummy forward
++    torch.onnx.export(
++        model,
++        input_list,
++        output_filename,
++        input_names=input_names,
++        output_names=proto_names,
++        export_params=True,
++        keep_initializers_as_inputs=True,
++        do_constant_folding=True,
++        verbose=False,
++        opset_version=opset_version)
++    model.forward = forward_backup #restore forward
++
++
++###########################################################
++def prepare_model_for_layer_outputs(onnx_model, export_layer_types=None, match_layer=None, return_layer=None):
++    layer_output_names = []
++    for i in range(len(onnx_model.graph.node)):
++        output_0 = onnx_model.graph.node[i].output[0]
++        if onnx_model.graph.node[i].op_type in export_layer_types:
++            for j in range(len(onnx_model.graph.node)):
++                if output_0 in onnx_model.graph.node[j].input:
++                    if onnx_model.graph.node[j].op_type == match_layer:
++                        if return_layer not in export_layer_types:
++                            if onnx_model.graph.node[j].output[0] not in layer_output_names:
++                                layer_output_names.append(onnx_model.graph.node[j].output[0])
++                        else:
++                            if onnx_model.graph.node[i].output[0] not in layer_output_names:
++                                layer_output_names.append(onnx_model.graph.node[i].output[0])
++    return layer_output_names
++
++###########################################################
++def _save_mmyolo_proto_yolov5(model, input_size, output_filename, proto_names=None, output_names=None, export_type='MMYOLO'):
++    bbox_head = model.bbox_head
++    base_sizes = model.bbox_head.prior_generator.base_sizes
++    background_label_id = -1
++    num_classes = bbox_head.num_classes
++
++    yolo_params = []
++    for base_size_id, base_size in enumerate(base_sizes):
++        yolo_param = mmyolo_meta_arch_pb2.TIDLYoloParams(input=proto_names[base_size_id],
++                                                        anchor_width=[base_size[idx][0] for idx in range(len(base_size))],
++                                                        anchor_height=[base_size[idx][1] for idx in range(len(base_size))],
++                                                         )
++        yolo_params.append(yolo_param)
++
++    nms_param = mmyolo_meta_arch_pb2.TIDLNmsParam(nms_threshold=0.45, top_k=200)
++    detection_output_param = mmyolo_meta_arch_pb2.TIDLOdPostProc(num_classes=num_classes, share_location=True,
++                                            background_label_id=background_label_id, nms_param=nms_param,
++                                            code_type=mmyolo_meta_arch_pb2.CODE_TYPE_YOLO_V5, keep_top_k=200,
++                                            confidence_threshold=0.3)
++
++    yolov5 = mmyolo_meta_arch_pb2.TidlYoloOd(name='yolov5', output=output_names,
++                                            in_width=input_size[3], in_height=input_size[2],
++                                            yolo_param=yolo_params,
++                                            detection_output_param=detection_output_param,
++                                            framework=export_type)
++
++    arch = mmyolo_meta_arch_pb2.TIDLMetaArch(name='yolov5',  tidl_yolo=[yolov5])
++
++    with open(output_filename, 'wt') as pfile:
++        txt_message = text_format.MessageToString(arch)
++        pfile.write(txt_message)
++
++
++###########################################################
++def _save_mmyolo_proto_yolox(model, input_size, output_filename, proto_names=None, output_names=None, export_type='MMYOLO'):
++    bbox_head = model.bbox_head
++    base_sizes = model.bbox_head.featmap_strides
++
++    background_label_id = -1
++    num_classes = bbox_head.num_classes
++
++    yolo_params = []
++    for base_size_id, base_size in enumerate(base_sizes):
++        yolo_param = mmyolo_meta_arch_pb2.TIDLYoloParams(input=proto_names[base_size_id],
++                                                        anchor_width=[base_size],
++                                                        anchor_height=[base_size])
++        yolo_params.append(yolo_param)
++
++    nms_param = mmyolo_meta_arch_pb2.TIDLNmsParam(nms_threshold=0.45, top_k=200)
++    detection_output_param = mmyolo_meta_arch_pb2.TIDLOdPostProc(num_classes=num_classes, share_location=True,
++                                            background_label_id=background_label_id, nms_param=nms_param,
++                                            code_type=mmyolo_meta_arch_pb2.CODE_TYPE_YOLO_X, keep_top_k=200,
++                                            confidence_threshold=0.3)
++
++    yolox = mmyolo_meta_arch_pb2.TidlYoloOd(name='yolox', output=output_names,
++                                            in_width=input_size[3], in_height=input_size[2],
++                                            yolo_param=yolo_params,
++                                            detection_output_param=detection_output_param,
++                                            framework=export_type)
++
++    arch = mmyolo_meta_arch_pb2.TIDLMetaArch(name='yolox',  tidl_yolo=[yolox])
++
++    with open(output_filename, 'wt') as pfile:
++        txt_message = text_format.MessageToString(arch)
++        pfile.write(txt_message)
++
++
++###########################################################
++def _save_mmyolo_proto_yolov6(model, input_size, output_filename, proto_names=None, output_names=None, export_type='MMYOLO'):
++    bbox_head = model.bbox_head
++    base_sizes = model.bbox_head.featmap_strides
++
++    background_label_id = -1
++    num_classes = bbox_head.num_classes
++
++    yolo_params = []
++    for base_size_id, base_size in enumerate(base_sizes):
++        yolo_param = mmyolo_meta_arch_pb2.TIDLYoloParams(input=proto_names[base_size_id],
++                                                        anchor_width=[base_size],
++                                                        anchor_height=[base_size])
++        yolo_params.append(yolo_param)
++
++    nms_param = mmyolo_meta_arch_pb2.TIDLNmsParam(nms_threshold=0.45, top_k=200)
++    detection_output_param = mmyolo_meta_arch_pb2.TIDLOdPostProc(num_classes=num_classes, share_location=True,
++                                            background_label_id=background_label_id, nms_param=nms_param,
++                                            code_type=mmyolo_meta_arch_pb2.CODE_TYPE_YOLO_X, keep_top_k=200,
++                                            confidence_threshold=0.3)
++
++    yolov6 = mmyolo_meta_arch_pb2.TidlYoloOd(name='yolov6', output=output_names,
++                                            in_width=input_size[3], in_height=input_size[2],
++                                            yolo_param=yolo_params,
++                                            detection_output_param=detection_output_param,
++                                            framework=export_type)
++
++    arch = mmyolo_meta_arch_pb2.TIDLMetaArch(name='yolov6',  tidl_yolo=[yolov6])
++    #YOLOv6 architecture is currently not supported in TIDL. We need to pass the information that the objectness score is not
++    #present in this model. O/W funationality is same as YOLOX.
++    with open(output_filename, 'wt') as pfile:
++        txt_message = text_format.MessageToString(arch)
++        pfile.write(txt_message)
++
++
++###########################################################
++def _save_mmyolo_proto_yolov7(model, input_size, output_filename, proto_names=None, output_names=None, export_type='MMYOLO'):
++    bbox_head = model.bbox_head
++    base_sizes = model.bbox_head.prior_generator.base_sizes
++
++    background_label_id = -1
++    num_classes = bbox_head.num_classes
++
++    yolo_params = []
++    for base_size_id, base_size in enumerate(base_sizes):
++        yolo_param = mmyolo_meta_arch_pb2.TIDLYoloParams(input=proto_names[base_size_id],
++                                                        anchor_width=[base_size[idx][0] for idx in range(len(base_size))],
++                                                        anchor_height=[base_size[idx][1] for idx in range(len(base_size))],
++                                                         )
++        yolo_params.append(yolo_param)
++
++    nms_param = mmyolo_meta_arch_pb2.TIDLNmsParam(nms_threshold=0.45, top_k=200)
++    detection_output_param = mmyolo_meta_arch_pb2.TIDLOdPostProc(num_classes=num_classes, share_location=True,
++                                            background_label_id=background_label_id, nms_param=nms_param,
++                                            code_type=mmyolo_meta_arch_pb2.CODE_TYPE_YOLO_V5, keep_top_k=200,
++                                            confidence_threshold=0.3)
++
++    yolov7 = mmyolo_meta_arch_pb2.TidlYoloOd(name='yolov7', output=output_names,
++                                            in_width=input_size[3], in_height=input_size[2],
++                                            yolo_param=yolo_params,
++                                            detection_output_param=detection_output_param,
++                                            framework=export_type)
++
++    arch = mmyolo_meta_arch_pb2.TIDLMetaArch(name='yolov7',  tidl_yolo=[yolov7])
++
++    with open(output_filename, 'wt') as pfile:
++        txt_message = text_format.MessageToString(arch)
++        pfile.write(txt_message)
++
++
++###########################################################
++def _save_mmyolo_proto_yolov8(model, input_size, output_filename, proto_names=None, output_names=None, export_type='MMYOLO'):
++    bbox_head = model.bbox_head
++    base_sizes = model.bbox_head.featmap_strides
++
++    background_label_id = -1
++    num_classes = bbox_head.num_classes
++
++    yolo_params = []
++    for base_size_id, base_size in enumerate(base_sizes):
++        yolo_param = mmyolo_meta_arch_pb2.TIDLYoloParams(input=proto_names[base_size_id],
++                                                        anchor_width=[base_size],
++                                                        anchor_height=[base_size])
++        yolo_params.append(yolo_param)
++
++    nms_param = mmyolo_meta_arch_pb2.TIDLNmsParam(nms_threshold=0.45, top_k=200)
++    detection_output_param = mmyolo_meta_arch_pb2.TIDLOdPostProc(num_classes=num_classes, share_location=True,
++                                            background_label_id=background_label_id, nms_param=nms_param,
++                                            code_type=mmyolo_meta_arch_pb2.CODE_TYPE_YOLO_V5, keep_top_k=200,
++                                            confidence_threshold=0.3)
++
++    yolov8 = mmyolo_meta_arch_pb2.TidlYoloOd(name='yolov8', output=output_names,
++                                            in_width=input_size[3], in_height=input_size[2],
++                                            yolo_param=yolo_params,
++                                            detection_output_param=detection_output_param,
++                                            framework=export_type)
++
++    arch = mmyolo_meta_arch_pb2.TIDLMetaArch(name='yolov8',  tidl_yolo=[yolov8])
++    #YOLOv8 architecture is currently not supported in TIDL. We need to pass the information that the objectness score is not
++    #present in this model. Apart from that, the bbox decoding has o be taken care of.
++    with open(output_filename, 'wt') as pfile:
++        txt_message = text_format.MessageToString(arch)
++        pfile.write(txt_message)
++
++
++###########################################################
++def _save_mmyolo_proto_yolov8_caffessd_format(model, input_size, output_filename, proto_names=None, output_names=None, export_type='MMYOLO'):
++    bbox_head = model.bbox_head
++    base_sizes = model.bbox_head.featmap_strides
++    background_label_id = -1
++    num_classes = bbox_head.num_classes
++    class_input =[]
++    box_input = []
++
++    #separating class_input and box_input layers from  proto_names list
++    for i in range(len(base_sizes)):
++        class_input.append(proto_names[i*2])
++        box_input.append(proto_names[i*2+1])
++
++    nms_param = mmyolo_meta_arch_pb2.TIDLNmsParam(nms_threshold=0.45, top_k=200)
++    detection_output_param = mmyolo_meta_arch_pb2.TIDLOdPostProc(num_classes=num_classes, share_location=True,
++                                            background_label_id=background_label_id, nms_param=nms_param,
++                                            code_type=mmyolo_meta_arch_pb2.CODE_TYPE_DIST2BBOX, keep_top_k=200,
++                                            confidence_threshold=0.3)
++
++    caffe_ssd_param = mmyolo_meta_arch_pb2.TidlMaCaffeSsd(name='yolov8',class_input=class_input,box_input=box_input,
++                                                          in_width=input_size[3], in_height=input_size[2],
++                                                          detection_output_param=detection_output_param,
++                                                          output=output_names,score_converter='SIGMOID')
++
++    arch = mmyolo_meta_arch_pb2.TIDLMetaArch(name='yolov8',  caffe_ssd=[caffe_ssd_param])
++    #YOLOv8 architecture is currently not supported in TIDL. We need to pass the information that the objectness score is not
++    #present in this model. Apart from that, the bbox decoding has o be taken care of.
++    with open(output_filename, 'wt') as pfile:
++        txt_message = text_format.MessageToString(arch)
++        pfile.write(txt_message)
+\ No newline at end of file
+diff --git a/projects/easydeploy/model/model.py b/projects/easydeploy/model/model.py
+index c67ed28..26a573a 100644
+--- a/projects/easydeploy/model/model.py
++++ b/projects/easydeploy/model/model.py
+@@ -11,7 +11,7 @@ from mmengine.config import ConfigDict
+ from torch import Tensor
+ 
+ from mmyolo.models import RepVGGBlock
+-from mmyolo.models.dense_heads import (PPYOLOEHead, RTMDetHead, YOLOv5Head,
++from mmyolo.models.dense_heads import (PPYOLOEHead, RTMDetHead, YOLOv5Head, YOLOv6Head,
+                                        YOLOv7Head, YOLOv8Head, YOLOXHead)
+ from mmyolo.models.layers import ImplicitA, ImplicitM
+ from ..backbone import DeployFocus, GConvFocus, NcnnFocus
+@@ -42,6 +42,7 @@ class DeployModel(nn.Module):
+             self.keep_top_k = postprocess_cfg.get('keep_top_k', 100)
+             self.iou_threshold = postprocess_cfg.get('iou_threshold', 0.65)
+             self.score_threshold = postprocess_cfg.get('score_threshold', 0.25)
++            self.export_type = postprocess_cfg.get('export_type', None)
+         self.__switch_deploy()
+ 
+     def __init_sub_attributes(self):
+@@ -115,6 +116,38 @@ class DeployModel(nn.Module):
+                     featmap_sizes, self.featmap_strides)
+         ]
+         flatten_stride = torch.cat(mlvl_strides)
++        if torch.onnx.is_in_onnx_export() and isinstance(self.baseHead, (YOLOv8Head, YOLOXHead, YOLOv6Head)):
++            num_scales = len(cls_scores)
++            scale_outputs = []
++            for _, scale_id in enumerate(range(num_scales)):
++                if objectnesses is not None:
++                    scale_output = torch.cat([bbox_preds[scale_id],
++                                              objectnesses[scale_id],
++                                              cls_scores[scale_id]], axis=1)
++                else:
++                    scale_output = torch.cat([bbox_preds[scale_id],
++                                              cls_scores[scale_id]], axis=1)
++                scale_outputs.append(scale_output)
++            num_elements_per_box = bbox_preds[0].shape[1]
++            bbox_preds = []
++            objectnesses = [] if objectnesses is not None else None
++            cls_scores = []
++            for _, scale_id in enumerate(range(num_scales)):
++                bbox_preds.append(scale_outputs[scale_id][:, :num_elements_per_box, ...])
++                if objectnesses is not None:
++                    objectnesses.append(scale_outputs[scale_id][:, num_elements_per_box:num_elements_per_box+1, ...])
++                    cls_scores.append(scale_outputs[scale_id][:, num_elements_per_box+1:, ...])
++                else:
++                    cls_scores.append(scale_outputs[scale_id][:, num_elements_per_box:, ...])
++
++        if isinstance(self.baseHead, YOLOv8Head):
++            for scale_idx, _ in enumerate(bbox_preds):
++                b, _, h, w = cls_scores[scale_idx].shape
++                bbox_preds[scale_idx] = bbox_preds[scale_idx].reshape(
++                        [-1, 4, self.baseHead.head_module.reg_max, h * w]).permute(0, 3, 1, 2)
++                bbox_preds[scale_idx] = bbox_preds[scale_idx].softmax(3).matmul(
++                    self.baseHead.head_module.proj.view([-1, 1])).squeeze(-1)
++                bbox_preds[scale_idx] = bbox_preds[scale_idx].transpose(1, 2).reshape(b, -1, h, w)
+ 
+         # flatten cls_scores, bbox_preds and objectness
+         flatten_cls_scores = [
+@@ -144,7 +177,7 @@ class DeployModel(nn.Module):
+                               flatten_stride)
+ 
+         return nms_func(bboxes, scores, self.keep_top_k, self.iou_threshold,
+-                        self.score_threshold, self.pre_top_k, self.keep_top_k)
++                        self.score_threshold, self.pre_top_k, self.keep_top_k, export_type=self.export_type)
+ 
+     def select_nms(self):
+         if self.backend in (MMYOLOBackend.ONNXRUNTIME, MMYOLOBackend.OPENVINO):
+diff --git a/projects/easydeploy/nms/ort_nms.py b/projects/easydeploy/nms/ort_nms.py
+index aad93cf..423f4b0 100644
+--- a/projects/easydeploy/nms/ort_nms.py
++++ b/projects/easydeploy/nms/ort_nms.py
+@@ -11,7 +11,8 @@ def select_nms_index(scores: Tensor,
+                      boxes: Tensor,
+                      nms_index: Tensor,
+                      batch_size: int,
+-                     keep_top_k: int = -1):
++                     keep_top_k: int = -1,
++                     export_type: str = None):
+     batch_inds, cls_inds = nms_index[:, 0], nms_index[:, 1]
+     box_inds = nms_index[:, 2]
+ 
+@@ -44,11 +45,17 @@ def select_nms_index(scores: Tensor,
+         device=topk_inds.device).view(-1, 1)
+     batched_dets = batched_dets[topk_batch_inds, topk_inds, ...]
+     batched_labels = batched_labels[topk_batch_inds, topk_inds, ...]
+-    batched_dets, batched_scores = batched_dets.split([4, 1], 2)
+-    batched_scores = batched_scores.squeeze(-1)
+ 
+-    num_dets = (batched_scores > 0).sum(1, keepdim=True)
+-    return num_dets, batched_dets, batched_scores, batched_labels
++    if export_type == 'YOLOv5':
++        num_dets = (batched_dets> 0).sum(1, keepdim=True)
++        return num_dets, batched_dets, batched_labels
++    else:
++        batched_dets, batched_scores = batched_dets.split([4, 1], 2)
++        batched_scores = batched_scores.squeeze(-1)
++        num_dets = (batched_scores > 0).sum(1, keepdim=True)
++        return num_dets, batched_dets, batched_scores, batched_labels
++
++
+ 
+ 
+ class ONNXNMSop(torch.autograd.Function):
+@@ -64,7 +71,7 @@ class ONNXNMSop(torch.autograd.Function):
+     ) -> Tensor:
+         device = boxes.device
+         batch = scores.shape[0]
+-        num_det = 20
++        num_det = 100
+         batches = torch.randint(0, batch, (num_det, )).sort()[0].to(device)
+         idxs = torch.arange(100, 100 + num_det).to(device)
+         zeros = torch.zeros((num_det, ), dtype=torch.int64).to(device)
+@@ -102,6 +109,7 @@ def onnx_nms(
+     pre_top_k: int = -1,
+     keep_top_k: int = 100,
+     box_coding: int = 0,
++    export_type: str = None
+ ):
+     max_output_boxes_per_class = torch.tensor([max_output_boxes_per_class])
+     iou_threshold = torch.tensor([iou_threshold])
+@@ -115,8 +123,18 @@ def onnx_nms(
+                                        max_output_boxes_per_class,
+                                        iou_threshold, score_threshold)
+ 
+-    num_dets, batched_dets, batched_scores, batched_labels = select_nms_index(
+-        scores, boxes, selected_indices, batch_size, keep_top_k=keep_top_k)
++    if export_type == 'YOLOv5':
++        num_dets, batched_dets, batched_labels = select_nms_index(
++            scores, boxes, selected_indices, batch_size, keep_top_k=keep_top_k, export_type=export_type)
++        batched_labels = batched_labels.to(torch.int32)
++        batched_labels = batched_labels[:,:,None]
++        return torch.cat((batched_dets,batched_labels),dim=-1)
++    elif export_type == 'MMDetection':
++        num_dets, batched_dets, batched_scores, batched_labels = select_nms_index(
++            scores, boxes, selected_indices, batch_size, keep_top_k=keep_top_k, export_type=export_type)
++        return torch.cat((batched_dets, batched_scores[...,None]), dim=-1), batched_labels.to(torch.int32)
++    else:
++        num_dets, batched_dets, batched_scores, batched_labels = select_nms_index(
++            scores, boxes, selected_indices, batch_size, keep_top_k=keep_top_k, export_type=export_type)
++        return num_dets, batched_dets, batched_scores, batched_labels.to(torch.int32)
+ 
+-    return num_dets, batched_dets, batched_scores, batched_labels.to(
+-        torch.int32)
+diff --git a/projects/easydeploy/tools/export_onnx.py b/projects/easydeploy/tools/export_onnx.py
+index b937cc8..8133722 100644
+--- a/projects/easydeploy/tools/export_onnx.py
++++ b/projects/easydeploy/tools/export_onnx.py
+@@ -11,21 +11,36 @@ from mmdet.apis import init_detector
+ from mmengine.config import ConfigDict
+ from mmengine.logging import print_log
+ from mmengine.utils.path import mkdir_or_exist
++from mmengine.runner import load_checkpoint
+ 
+ # Add MMYOLO ROOT to sys.path
+ sys.path.append(str(Path(__file__).resolve().parents[3]))
+ from projects.easydeploy.model import DeployModel, MMYOLOBackend  # noqa E402
+ 
++from mmyolo.models.dense_heads import YOLOv5HeadModule, YOLOv7HeadModule, YOLOv8HeadModule, YOLOv6HeadModule, YOLOXHead
++from mmyolo.utils.save_model import save_model_proto
++
++from edgeai_torchmodelopt import xmodelopt
++from edgeai_torchmodelopt import xonnx
++
+ warnings.filterwarnings(action='ignore', category=torch.jit.TracerWarning)
+ warnings.filterwarnings(action='ignore', category=torch.jit.ScriptWarning)
+ warnings.filterwarnings(action='ignore', category=UserWarning)
+ warnings.filterwarnings(action='ignore', category=FutureWarning)
+ warnings.filterwarnings(action='ignore', category=ResourceWarning)
+ 
++def str_or_none(v):
++    return None if v.lower() in ('none', 'null', '') else v
++
+ 
+ def parse_args():
+     parser = argparse.ArgumentParser()
+     parser.add_argument('config', help='Config file')
++    parser.add_argument(
++        '--model-surgery',
++        type=int,
++        default=0,
++        help='create lite version of a model by applying a set of fx based transformations on the model')
+     parser.add_argument('checkpoint', help='Checkpoint file')
+     parser.add_argument(
+         '--model-only', action='store_true', help='Export model only')
+@@ -39,7 +54,7 @@ def parse_args():
+         help='Image size of height and width')
+     parser.add_argument('--batch-size', type=int, default=1, help='Batch size')
+     parser.add_argument(
+-        '--device', default='cuda:0', help='Device used for inference')
++        '--device', default='cpu', help='Device used for inference')
+     parser.add_argument(
+         '--simplify',
+         action='store_true',
+@@ -71,17 +86,20 @@ def parse_args():
+         type=float,
+         default=0.25,
+         help='Score threshold for NMS')
++    parser.add_argument(
++        '--export-type',
++        type=str_or_none,
++        default=None,
++        help='Make output compatible with the desired format (for example: MMDetection, YOLOv5). None: for default format.')
+     args = parser.parse_args()
+     args.img_size *= 2 if len(args.img_size) == 1 else 1
+     return args
+ 
+-
+ def build_model_from_cfg(config_path, checkpoint_path, device):
+     model = init_detector(config_path, checkpoint_path, device=device)
+     model.eval()
+     return model
+ 
+-
+ def main():
+     args = parse_args()
+     mkdir_or_exist(args.work_dir)
+@@ -102,10 +120,61 @@ def main():
+             pre_top_k=args.pre_topk,
+             keep_top_k=args.keep_topk,
+             iou_threshold=args.iou_threshold,
+-            score_threshold=args.score_threshold)
+-        output_names = ['num_dets', 'boxes', 'scores', 'labels']
++            score_threshold=args.score_threshold,
++            backend=args.backend,
++            export_type=args.export_type)
++        
++        if args.export_type in (None, 'MMYOLO'):
++            output_names = ['num_dets', 'boxes', 'scores', 'labels']
++        elif args.export_type == 'MMDetection':
++            output_names = ['dets', 'labels']
++        elif args.export_type == 'YOLOv5':
++            output_names = ['detections']
++        else:
++           output_names = ['num_dets', 'boxes', 'scores', 'labels']
++
+     baseModel = build_model_from_cfg(args.config, args.checkpoint, args.device)
+ 
++    if args.export_type is None:
++        is_yolov5_or_yolov7 = isinstance(baseModel.bbox_head.head_module, (YOLOv5HeadModule, YOLOv7HeadModule, YOLOv8HeadModule))
++        args.export_type = 'YOLOv5' if is_yolov5_or_yolov7 else args.export_type
++        postprocess_cfg.export_type = args.export_type
++        output_names = ['detections']
++		    
++    if args.model_surgery:
++        surgery_fn = xmodelopt.surgery.v1.convert_to_lite_model if args.model_surgery == 1 \
++                     else (xmodelopt.surgery.v2.convert_to_lite_fx if args.model_surgery == 2 else None)
++        
++        if isinstance(baseModel.bbox_head.head_module, (YOLOv6HeadModule)):
++            #For YOLOv6 model, the flow is different as reparameterization has to happen before surgery as it is lost during fx based transformation
++            deploy_model = DeployModel(
++                baseModel=baseModel, backend=backend, postprocess_cfg=postprocess_cfg)
++            deploy_model.baseModel.backbone = surgery_fn(deploy_model.baseModel.backbone)
++            deploy_model.baseModel.neck = surgery_fn(deploy_model.baseModel.neck)
++            # Only head_module of head goes through model_surgery as it contains all compute layers
++            # deploy_model.baseModel.bbox_head.head_module = surgery_fn(deploy_model.baseModel.bbox_head.head_module)
++            deploy_model.baseModel.bbox_head.head_module = xmodelopt.surgery.v1.convert_to_lite_model(deploy_model.baseModel.bbox_head.head_module)
++        else:
++            baseModel.backbone = surgery_fn(baseModel.backbone)
++            baseModel.neck = surgery_fn(baseModel.neck)
++            
++            # Only head_module of head goes through model_surgery as it contains all compute layers
++            if hasattr(baseModel.bbox_head.head_module, 'reg_max') and hasattr(baseModel.bbox_head.head_module, 'proj'):
++                reg_max = baseModel.bbox_head.head_module.reg_max
++                proj = baseModel.bbox_head.head_module.proj
++            else:
++                reg_max = None
++                proj = None
++            if isinstance(baseModel.bbox_head.head_module, (YOLOv8HeadModule,)):
++                baseModel.bbox_head.head_module = xmodelopt.surgery.v1.convert_to_lite_model(baseModel.bbox_head.head_module)
++            if not isinstance(baseModel.bbox_head.head_module, (YOLOv5HeadModule, YOLOv7HeadModule, YOLOv8HeadModule)):
++                baseModel.bbox_head.head_module = surgery_fn(baseModel.bbox_head.head_module)
++            if reg_max is not None and proj is not None:
++                baseModel.bbox_head.head_module.reg_max = reg_max
++                baseModel.bbox_head.head_module.proj = proj
++
++    load_checkpoint(baseModel, args.checkpoint, map_location='cpu')
++
+     deploy_model = DeployModel(
+         baseModel=baseModel, backend=backend, postprocess_cfg=postprocess_cfg)
+     deploy_model.eval()
+@@ -113,7 +182,7 @@ def main():
+     fake_input = torch.randn(args.batch_size, 3,
+                              *args.img_size).to(args.device)
+     # dry run
+-    deploy_model(fake_input)
++    fake_outputs = deploy_model(fake_input)
+ 
+     save_onnx_path = os.path.join(
+         args.work_dir,
+@@ -152,6 +221,19 @@ def main():
+     onnx.save(onnx_model, save_onnx_path)
+     print_log(f'ONNX export success, save into {save_onnx_path}')
+ 
++    # check the layers names and shorten it required.
++    if args.model_surgery:
++        xonnx.prune_layer_names(save_onnx_path, save_onnx_path, opset_version=args.opset)
++
++    onnx_model = onnx.load(save_onnx_path)
++    save_prototxt_path = save_model_proto(baseModel,
++                     onnx_model,
++                     fake_input,
++                     save_onnx_path,
++                     output_names=output_names,
++                     export_type=args.export_type)
++
++    print(f'Prototxt export success, save into {save_prototxt_path}')
+ 
+ if __name__ == '__main__':
+     main()
+diff --git a/setup.sh b/setup.sh
+new file mode 100755
+index 0000000..2fa4a1e
+--- /dev/null
++++ b/setup.sh
+@@ -0,0 +1,39 @@
++#!/usr/bin/env bash
++
++# Copyright (c) 2018-2023, Texas Instruments
++# All Rights Reserved.
++#
++# Redistribution and use in source and binary forms, with or without
++# modification, are permitted provided that the following conditions are met:
++#
++# * Redistributions of source code must retain the above copyright notice, this
++#   list of conditions and the following disclaimer.
++#
++# * Redistributions in binary form must reproduce the above copyright notice,
++#   this list of conditions and the following disclaimer in the documentation
++#   and/or other materials provided with the distribution.
++#
++# * Neither the name of the copyright holder nor the names of its
++#   contributors may be used to endorse or promote products derived from
++#   this software without specific prior written permission.
++#
++# THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS"
++# AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
++# IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE
++# DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT HOLDER OR CONTRIBUTORS BE LIABLE
++# FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL
++# DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR
++# SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER
++# CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY,
++# OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
++# OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
++
++######################################################################
++
++pip install -U openmim
++mim install -r requirements/mminstall.txt
++mim install -r requirements/albu.txt
++
++pip3 install --no-input protobuf==3.20.2 onnx==1.13.0
++
++pip install git+https://github.com/TexasInstruments/edgeai-modeloptimization.git@r9.1#subdirectory=torchmodelopt
+diff --git a/tools/dist_test.sh b/tools/dist_test.sh
+index dea131b..6c21920 100755
+--- a/tools/dist_test.sh
++++ b/tools/dist_test.sh
+@@ -17,6 +17,6 @@ python -m torch.distributed.launch \
+     --master_port=$PORT \
+     $(dirname "$0")/test.py \
+     $CONFIG \
+-    $CHECKPOINT \
++    $CHECKPOINT --model-surgery 1 \
+     --launcher pytorch \
+     ${@:4}
+diff --git a/tools/dist_train.sh b/tools/dist_train.sh
+index 3fca764..3259a43 100755
+--- a/tools/dist_train.sh
++++ b/tools/dist_train.sh
+@@ -15,5 +15,5 @@ python -m torch.distributed.launch \
+     --nproc_per_node=$GPUS \
+     --master_port=$PORT \
+     $(dirname "$0")/train.py \
+-    $CONFIG \
++    $CONFIG --model-surgery 1 \
+     --launcher pytorch ${@:3}
+diff --git a/tools/test.py b/tools/test.py
+index f0ac8bd..b4f4c13 100644
+--- a/tools/test.py
++++ b/tools/test.py
+@@ -8,10 +8,13 @@ from mmdet.utils import setup_cache_size_limit_of_dynamo
+ from mmengine.config import Config, ConfigDict, DictAction
+ from mmengine.evaluator import DumpResults
+ from mmengine.runner import Runner
++from mmengine.model import is_model_wrapper
++from mmyolo.models.dense_heads import YOLOv5HeadModule, YOLOv7HeadModule, YOLOv6HeadModule, YOLOv8HeadModule
+ 
+ from mmyolo.registry import RUNNERS
+ from mmyolo.utils import is_metainfo_lower
+ 
++from edgeai_torchmodelopt import xmodelopt
+ 
+ # TODO: support fuse_conv_bn
+ def parse_args():
+@@ -19,6 +22,11 @@ def parse_args():
+         description='MMYOLO test (and eval) a model')
+     parser.add_argument('config', help='test config file path')
+     parser.add_argument('checkpoint', help='checkpoint file')
++    parser.add_argument(
++        '--model-surgery',
++        type=int,
++        default=0,
++        help='create lite version of a model by applying a set of fx based transformations on the model')
+     parser.add_argument(
+         '--work-dir',
+         help='the directory to save the file containing evaluation metrics')
+@@ -149,8 +157,33 @@ def main():
+             'The dump file must be a pkl file.'
+         runner.test_evaluator.metrics.append(
+             DumpResults(out_file_path=args.out))
+-
+-    # start testing
++    if args.model_surgery:
++        surgery_fn = xmodelopt.surgery.v1.convert_to_lite_model if args.model_surgery == 1 \
++                     else (xmodelopt.surgery.v2.convert_to_lite_fx if args.model_surgery == 2 else None)
++        runner.model.eval()
++        if is_model_wrapper(runner.model):
++            runner.model = runner.model.module
++        # start testing
++        runner.model.backbone = surgery_fn(runner.model.backbone)
++        runner.model.neck = surgery_fn(runner.model.neck)
++
++        # Only head_module of head goes through model_surgery as it contains all compute layers
++        if not isinstance(runner.model.bbox_head.head_module, (YOLOv5HeadModule, YOLOv7HeadModule, YOLOv8HeadModule, YOLOv6HeadModule)):
++            runner.model.bbox_head.head_module = \
++                surgery_fn(runner.model.bbox_head.head_module)
++            if hasattr(runner.model.bbox_head.head_module, 'reg_max') and hasattr(runner.model.bbox_head.head_module, 'proj'):
++                    reg_max = runner.model.bbox_head.head_module.reg_max
++                    proj = runner.model.bbox_head.head_module.proj
++            else:
++                    reg_max = None
++                    proj = None
++            if reg_max is not None and proj is not None:
++                runner.model.bbox_head.head_module.reg_max = reg_max
++                runner.model.bbox_head.head_module.proj = proj
++        elif isinstance(runner.model.bbox_head.head_module, (YOLOv8HeadModule, YOLOv6HeadModule)):
++            runner.model.bbox_head.head_module = xmodelopt.surgery.v1.convert_to_lite_model(runner.model.bbox_head.head_module)
++        runner.model = runner.wrap_model(runner.cfg.get('model_wrapper_cfg'), runner.model)
++    print("\n\n model summary : \n",runner.model)   
+     runner.test()
+ 
+ 
+diff --git a/tools/train.py b/tools/train.py
+index 61f9498..ebf18a1 100644
+--- a/tools/train.py
++++ b/tools/train.py
+@@ -8,10 +8,15 @@ from mmdet.utils import setup_cache_size_limit_of_dynamo
+ from mmengine.config import Config, DictAction
+ from mmengine.logging import print_log
+ from mmengine.runner import Runner
++from mmengine.model import is_model_wrapper
++from mmyolo.models.dense_heads import YOLOv5HeadModule, YOLOv7HeadModule, YOLOv8HeadModule, YOLOv6HeadModule
+ 
+ from mmyolo.registry import RUNNERS
+ from mmyolo.utils import is_metainfo_lower
+ 
++from edgeai_torchmodelopt import xmodelopt
++# from edgeai_torchtoolkit import xao
++# from edgeai_torchtoolkit import xnn
+ 
+ def parse_args():
+     parser = argparse.ArgumentParser(description='Train a detector')
+@@ -22,6 +27,11 @@ def parse_args():
+         action='store_true',
+         default=False,
+         help='enable automatic-mixed-precision training')
++    parser.add_argument(
++        '--lite',
++        action='store_true',
++        default=False,
++        help='create lite version of a model by applying a set of fx based transformations on the model')
+     parser.add_argument(
+         '--resume',
+         nargs='?',
+@@ -49,13 +59,12 @@ def parse_args():
+     # will pass the `--local-rank` parameter to `tools/train.py` instead
+     # of `--local_rank`.
+     parser.add_argument('--local_rank', '--local-rank', type=int, default=0)
++    parser.add_argument('--model-surgery', type=int, default=0)
+     args = parser.parse_args()
+     if 'LOCAL_RANK' not in os.environ:
+         os.environ['LOCAL_RANK'] = str(args.local_rank)
+-
+     return args
+ 
+-
+ def main():
+     args = parse_args()
+ 
+@@ -116,6 +125,29 @@ def main():
+         runner = RUNNERS.build(cfg)
+ 
+     # start training
++    if args.model_surgery:
++        surgery_fn = xmodelopt.surgery.v1.convert_to_lite_model if args.model_surgery == 1 \
++                     else (xmodelopt.surgery.v2.convert_to_lite_fx if args.model_surgery == 2 else None)
++        
++        runner._init_model_weights()
++        if is_model_wrapper(runner.model):
++            runner.model = runner.model.module
++        runner.model.backbone = surgery_fn(runner.model.backbone)
++        runner.model.neck = surgery_fn(runner.model.neck)
++        # Only head_module of head goes through model_surgery as it contains all compute layers
++        if not isinstance(runner.model.bbox_head.head_module, (YOLOv5HeadModule, YOLOv7HeadModule, YOLOv8HeadModule, YOLOv6HeadModule)):
++            if hasattr(runner.model.bbox_head.head_module, 'reg_max'):
++                reg_max = runner.model.bbox_head.head_module.reg_max
++            else:
++                reg_max = None
++            runner.model.bbox_head.head_module = \
++                surgery_fn(runner.model.bbox_head.head_module)
++            if reg_max is not None:
++                runner.model.bbox_head.head_module.reg_max = reg_max
++        elif isinstance(runner.model.bbox_head.head_module, (YOLOv8HeadModule, YOLOv6HeadModule)):
++            runner.model.bbox_head.head_module = xmodelopt.surgery.v1.convert_to_lite_model(runner.model.bbox_head.head_module)
++        runner.model = runner.wrap_model(runner.cfg.get('model_wrapper_cfg'), runner.model)
++    print("\n\n model summary : \n",runner.model)
+     runner.train()
+ 
+ 
+-- 
+2.34.1
+
