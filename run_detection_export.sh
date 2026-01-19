@@ -1,7 +1,7 @@
 
-CONFIG_FILE="/home/kira9k/ieos/mmyolo/configs/yolov8/yolov8_s_syncbn_fast_8xb16-500e_coco.py"
-CHECKPOINT_FILE="/home/kira9k/ieos/mmyolo/work_dirs/last_train_norm_people_25_12/yolov8_s_norm_people_big_data_send/best_coco_bbox_mAP_epoch_200.pth"
-WORK_DIR="/home/kira9k/ieos/mmyolo/work_dirs/onnx_export/yolov8_s_norm_people_big_data"
+CONFIG_FILE="configs/yolov5/yolov5_s-v61_syncbn_8xb16-300e_coco.py"
+CHECKPOINT_FILE="work_dirs/fully_training_small+norn_people/yolov5s_norm_small_people/best_coco_bbox_mAP_epoch_300.pth"
+WORK_DIR="work_dirs/onnx_export/test_docker"
 
 python projects/easydeploy/tools/export_onnx.py  ${CONFIG_FILE}  ${CHECKPOINT_FILE} \
     --work-dir ${WORK_DIR}   \

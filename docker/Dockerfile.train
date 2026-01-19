@@ -1,0 +1,47 @@
+FROM pytorch/pytorch:2.7.1-cuda12.8-cudnn9-devel
+
+ENV DEBIAN_FRONTEND=noninteractive \
+    FORCE_CUDA=1 \
+    TORCH_CUDA_ARCH_LIST="8.9+PTX" \
+    PIP_USE_PEP517=0
+
+RUN apt-get update && apt-get install -y \
+    git \
+    libgl1 \
+    libglib2.0-0 \
+    ninja-build \
+    build-essential \
+    && apt-get clean \
+    && rm -rf /var/lib/apt/lists/*
+
+RUN pip install --upgrade pip && \
+    pip install --no-cache-dir \
+        numpy==2.2.6 \
+        openmim
+
+RUN mim install --no-cache-dir \
+        mmengine==0.10.7 \
+        #mmcv==2.1.0 \
+        mmdet==3.3.0
+
+RUN git clone --depth 1 --branch v2.1.0 https://github.com/open-mmlab/mmcv.git /tmp/mmcv && \
+    cd /tmp/mmcv && \
+    #pip install -r requirements/optional.txt && \
+    #MMCV_WITH_OPS=1 python setup.py develop && \
+    pip install pip==24.0 --force-reinstall && \
+    MMCV_WITH_OPS=1 pip install . --no-build-isolation --no-cache-dir && \
+    cd ../../
+
+WORKDIR /mmyolo
+COPY . /mmyolo
+
+RUN pip install --upgrade pip &&\
+    pip install --no-cache-dir -r requirements/albu.txt &&\
+    pip install --no-cache-dir prettytable && \
+    pip install --no-cache-dir onnx==1.13.0 && \
+    pip install --no-cache-dir git+https://github.com/TexasInstruments/edgeai-modeloptimization.git@r9.1#subdirectory=torchmodelopt
+
+
+RUN pip install pip==24.0 --force-reinstall && \
+    pip install --no-cache-dir -v -e . --no-build-isolation && \
+    pip install onnxruntime
