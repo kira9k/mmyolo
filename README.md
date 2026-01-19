@@ -1,3 +1,22 @@
+# Запуск из докера
+Клонируем репозиторий
+```bash
+git clone https://github.com/kira9k/mmyolo.git
+```
+Для сборки образа необходимо выполнить следующие команды из корневой папки ```mmyolo```
+```bash
+./build_docker.sh 
+```
+Запуск контейнера 
+```bash
+./run_docker.sh
+```
+Запуск еще одного терминала
+```bash
+./run_another_terminal_docker.sh
+```
+
+
 # EdgeAI-MMYOLO
 
 This repository is a fork of the popular [mmyolo](https://github.com/open-mmlab/mmyolo) open source repository for YOLO based object detection models. MMYOLO is an open source toolbox for YOLO series algorithms based on PyTorch and [MMDetection](https://github.com/open-mmlab/mmdetection). It is a part of the [OpenMMLab](https://openmmlab.com/) project. While mmyolo focuses on a wide variety of models, typically at high complexity, this fork focuses on models that are optimized for speed and accuracy so that they run efficiently on embedded devices. For this purpose, [edgeai-modeloptimization](https://github.com/TexasInstruments/edgeai-modeloptimization) toolkit is used to convert the models to an embedded friendly version.
