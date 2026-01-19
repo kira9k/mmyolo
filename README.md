@@ -1,9 +1,9 @@
 # Запуск из докера
-Клонируем репозиторий
+Клонируем репозиторий и нужную ветку 
 ```bash
-git clone https://github.com/kira9k/mmyolo.git
+git clone -b work_version https://github.com/kira9k/mmyolo.git
 ```
-Для сборки образа необходимо выполнить следующие команды из корневой папки ```mmyolo```
+Для сборки образа необходимо выполнить команду из корневой папки ```mmyolo```
 ```bash
 ./build_docker.sh 
 ```
@@ -14,6 +14,10 @@ git clone https://github.com/kira9k/mmyolo.git
 Запуск еще одного терминала
 ```bash
 ./run_another_terminal_docker.sh
+```
+Для остановки контейнера необходимо ввести команду
+```bash
+docker stop mmyolo_temp
 ```
 
 
