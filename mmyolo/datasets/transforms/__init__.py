@@ -1,5 +1,6 @@
 # Copyright (c) OpenMMLab. All rights reserved.
 from .formatting import PackDetInputs
+from .grayscale import ToGrayscale
 from .mix_img_transforms import Mosaic, Mosaic9, YOLOv5MixUp, YOLOXMixUp
 from .transforms import (FilterAnnotations, LetterResize, LoadAnnotations,
                          Polygon2Mask, PPYOLOERandomCrop, PPYOLOERandomDistort,
@@ -11,7 +12,7 @@ from .CustomAug import MyInvert, ThermalRandomErasing, ThermalGaussianBlur, Loca
 
 __all__ = [
     'YOLOv5KeepRatioResize', 'LetterResize', 'Mosaic', 'YOLOXMixUp',
-    'YOLOv5MixUp', 'YOLOv5HSVRandomAug', 'LoadAnnotations',
+    'YOLOv5MixUp', 'YOLOv5HSVRandomAug', 'LoadAnnotations', 'ToGrayscale',
     'YOLOv5RandomAffine', 'PPYOLOERandomDistort', 'PPYOLOERandomCrop',
     'Mosaic9', 'YOLOv5CopyPaste', 'RemoveDataElement', 'RegularizeRotatedBox',
     'Polygon2Mask', 'PackDetInputs', 'RandomAffine', 'RandomFlip', 'Resize',

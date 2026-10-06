@@ -276,6 +276,9 @@ class YOLOv5Head(BaseDenseHead):
         """
         return self.head_module(x)
 
+    def _activate_cls_scores(self, scores: Tensor) -> Tensor:
+        return scores.sigmoid()
+
     def predict_by_feat(self,
                         cls_scores: List[Tensor],
                         bbox_preds: List[Tensor],
@@ -374,7 +377,8 @@ class YOLOv5Head(BaseDenseHead):
             for bbox_pred in bbox_preds
         ]
 
-        flatten_cls_scores = torch.cat(flatten_cls_scores, dim=1).sigmoid()
+        flatten_cls_scores = self._activate_cls_scores(
+            torch.cat(flatten_cls_scores, dim=1))
         flatten_bbox_preds = torch.cat(flatten_bbox_preds, dim=1)
         flatten_decoded_bboxes = self.bbox_coder.decode(
             flatten_priors[None], flatten_bbox_preds, flatten_stride)

@@ -72,8 +72,22 @@ def save_model_proto(model, onnx_model, input, output_filename, input_names=None
                                                         return_layer='Mul')
         _save_mmyolo_proto_yolov7(model, input_size, output_filename, feature_names, output_names, export_type=export_type)
     elif is_yolov8:
-        feature_names = prepare_model_for_layer_outputs(onnx_model, export_layer_types='Conv', match_layer = 'Concat',
-                                                        return_layer = 'Conv')
+        head_outputs = [output.name for output in onnx_model.graph.output]
+        conv_outputs = {
+            output for node in onnx_model.graph.node if node.op_type == 'Conv'
+            for output in node.output
+        }
+        # Model-only export exposes interleaved class/box convolutions.
+        activated_scores = model.bbox_head.export_score_activation
+        if (len(head_outputs) == 2 * len(model.bbox_head.featmap_strides)
+                and all(name in conv_outputs for name in head_outputs[1::2])
+                and (activated_scores or all(name in conv_outputs
+                                              for name in head_outputs[::2]))):
+            feature_names = head_outputs
+        else:
+            feature_names = prepare_model_for_layer_outputs(
+                onnx_model, export_layer_types='Conv', match_layer='Concat',
+                return_layer='Conv')
         _save_mmyolo_proto_yolov8_caffessd_format(model, input_size, output_filename, feature_names, output_names, export_type=export_type)
 
     return output_filename
@@ -322,7 +336,8 @@ def _save_mmyolo_proto_yolov8_caffessd_format(model, input_size, output_filename
     caffe_ssd_param = mmyolo_meta_arch_pb2.TidlMaCaffeSsd(name='yolov8',class_input=class_input,box_input=box_input,
                                                           in_width=input_size[3], in_height=input_size[2],
                                                           detection_output_param=detection_output_param,
-                                                          output=output_names,score_converter='SIGMOID')
+                                                          output=output_names,
+                                                          score_converter=('IDENTITY' if bbox_head.export_score_activation else 'SIGMOID'))
 
     arch = mmyolo_meta_arch_pb2.TIDLMetaArch(name='yolov8',  caffe_ssd=[caffe_ssd_param])
     #YOLOv8 architecture is currently not supported in TIDL. We need to pass the information that the objectness score is not

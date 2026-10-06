@@ -185,6 +185,10 @@ class YOLOv8CSPDarknet(BaseBackbone):
             and its variants only. Defaults to False.
         init_cfg (Union[dict,list[dict]], optional): Initialization config
             dict. Defaults to None.
+        csp_fusion_mode (str): C2f branch fusion, 'concat' or 'add'.
+            Defaults to 'concat'.
+        spp_fusion_mode (str): SPPF branch fusion, 'concat' or 'add'.
+            Defaults to 'concat'.
 
     Example:
         >>> from mmyolo.models import YOLOv8CSPDarknet
@@ -221,7 +225,11 @@ class YOLOv8CSPDarknet(BaseBackbone):
                      type='BN', momentum=0.03, eps=0.001),
                  act_cfg: ConfigType = dict(type='SiLU', inplace=True),
                  norm_eval: bool = False,
-                 init_cfg: OptMultiConfig = None):
+                 init_cfg: OptMultiConfig = None,
+                 csp_fusion_mode: str = 'concat',
+                 spp_fusion_mode: str = 'concat'):
+        self.csp_fusion_mode = csp_fusion_mode
+        self.spp_fusion_mode = spp_fusion_mode
         self.arch_settings[arch][-1][1] = last_stage_out_channels
         super().__init__(
             self.arch_settings[arch],
@@ -275,7 +283,8 @@ class YOLOv8CSPDarknet(BaseBackbone):
             num_blocks=num_blocks,
             add_identity=add_identity,
             norm_cfg=self.norm_cfg,
-            act_cfg=self.act_cfg)
+            act_cfg=self.act_cfg,
+            fusion_mode=self.csp_fusion_mode)
         stage.append(csp_layer)
         if use_spp:
             spp = SPPFBottleneck(
@@ -283,7 +292,8 @@ class YOLOv8CSPDarknet(BaseBackbone):
                 out_channels,
                 kernel_sizes=5,
                 norm_cfg=self.norm_cfg,
-                act_cfg=self.act_cfg)
+                act_cfg=self.act_cfg,
+                fusion_mode=self.spp_fusion_mode)
             stage.append(spp)
         return stage
 

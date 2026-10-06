@@ -134,6 +134,7 @@ def main():
            output_names = ['num_dets', 'boxes', 'scores', 'labels']
 
     baseModel = build_model_from_cfg(args.config, args.checkpoint, args.device)
+    input_channels = baseModel.backbone.input_channels
 
     if args.export_type is None:
         is_yolov5_or_yolov7 = isinstance(baseModel.bbox_head.head_module, (YOLOv5HeadModule, YOLOv7HeadModule, YOLOv8HeadModule))
@@ -179,7 +180,7 @@ def main():
         baseModel=baseModel, backend=backend, postprocess_cfg=postprocess_cfg)
     deploy_model.eval()
 
-    fake_input = torch.randn(args.batch_size, 3,
+    fake_input = torch.randn(args.batch_size, input_channels,
                              *args.img_size).to(args.device)
     # dry run
     fake_outputs = deploy_model(fake_input)
@@ -225,7 +226,7 @@ def main():
     
     if args.model_surgery:
     #     xonnx.prune_layer_names(save_onnx_path, save_onnx_path, opset_version=args.opset)
-        fake_input_cpu = torch.randn(args.batch_size, 3,
+        fake_input_cpu = torch.randn(args.batch_size, input_channels,
                              *args.img_size).to(args.device)
         traced_model = torch.jit.trace(deploy_model, fake_input_cpu, check_trace=False, strict=False, check_inputs=[fake_input_cpu])
         traced_model = torch.jit.freeze(traced_model)

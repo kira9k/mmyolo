@@ -4,7 +4,7 @@ from typing import List, Sequence, Tuple, Union
 
 import torch
 import torch.nn as nn
-from mmcv.cnn import ConvModule
+from mmcv.cnn import ConvModule, build_activation_layer
 from mmdet.models.utils import multi_apply
 from mmdet.utils import (ConfigType, OptConfigType, OptInstanceList,
                          OptMultiConfig)
@@ -219,6 +219,9 @@ class YOLOv8Head(YOLOv5Head):
         init_cfg (:obj:`ConfigDict` or list[:obj:`ConfigDict`] or dict or
             list[dict], optional): Initialization config dict.
             Defaults to None.
+        score_act_cfg (dict): Class score activation, 'Sigmoid' or 'HSigmoid'.
+            Hard sigmoid is also embedded in model-only exports, whose class
+            outputs then contain probabilities instead of logits.
     """
 
     def __init__(self,
@@ -246,7 +249,10 @@ class YOLOv8Head(YOLOv5Head):
                      loss_weight=1.5 / 4),
                  train_cfg: OptConfigType = None,
                  test_cfg: OptConfigType = None,
-                 init_cfg: OptMultiConfig = None):
+                 init_cfg: OptMultiConfig = None,
+                 score_act_cfg: ConfigType = dict(type='Sigmoid')):
+        if score_act_cfg['type'] not in ('Sigmoid', 'HSigmoid'):
+            raise ValueError("score_act_cfg type must be 'Sigmoid' or 'HSigmoid'")
         super().__init__(
             head_module=head_module,
             prior_generator=prior_generator,
@@ -256,10 +262,15 @@ class YOLOv8Head(YOLOv5Head):
             train_cfg=train_cfg,
             test_cfg=test_cfg,
             init_cfg=init_cfg)
+        self.score_activation = build_activation_layer(score_act_cfg)
+        self.export_score_activation = score_act_cfg['type'] == 'HSigmoid'
         self.loss_dfl = MODELS.build(loss_dfl)
         # YOLOv8 doesn't need loss_obj
         self.loss_obj = None
         self.objectness = False
+
+    def _activate_cls_scores(self, scores: Tensor) -> Tensor:
+        return self.score_activation(scores)
 
     def special_init(self):
         """Since YOLO series algorithms will inherit from YOLOv5Head, but
@@ -359,7 +370,10 @@ class YOLOv8Head(YOLOv5Head):
 
         assigned_result = self.assigner(
             (flatten_pred_bboxes.detach()).type(gt_bboxes.dtype),
-            flatten_cls_preds.detach().sigmoid(), self.flatten_priors_train,
+            # Hard sigmoid clips initial negative logits to zero, eliminating
+            # task-aligned target weights. Keep smooth scores for training.
+            flatten_cls_preds.detach().sigmoid(),
+            self.flatten_priors_train,
             gt_labels, gt_bboxes, pad_bbox_flag)
 
         assigned_bboxes = assigned_result['assigned_bboxes']

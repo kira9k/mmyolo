@@ -55,6 +55,8 @@ class SPPFBottleneck(BaseModule):
             Defaults to dict(type='SiLU', inplace=True).
         init_cfg (dict or list[dict], optional): Initialization config dict.
             Defaults to None.
+        fusion_mode (str): Pooling branch fusion, 'concat' or 'add'.
+            Defaults to 'concat'.
     """
 
     def __init__(self,
@@ -67,8 +69,12 @@ class SPPFBottleneck(BaseModule):
                  norm_cfg: ConfigType = dict(
                      type='BN', momentum=0.03, eps=0.001),
                  act_cfg: ConfigType = dict(type='SiLU', inplace=True),
-                 init_cfg: OptMultiConfig = None):
+                 init_cfg: OptMultiConfig = None,
+                 fusion_mode: str = 'concat'):
         super().__init__(init_cfg)
+        if fusion_mode not in ('concat', 'add'):
+            raise ValueError("fusion_mode must be 'concat' or 'add'")
+        self.fusion_mode = fusion_mode
 
         if use_conv_first:
             mid_channels = int(in_channels * mid_channels_scale)
@@ -95,6 +101,9 @@ class SPPFBottleneck(BaseModule):
             ])
             conv2_in_channels = mid_channels * (len(kernel_sizes) + 1)
 
+        if self.fusion_mode == 'add':
+            conv2_in_channels = mid_channels
+
         self.conv2 = ConvModule(
             conv2_in_channels,
             out_channels,
@@ -110,6 +119,17 @@ class SPPFBottleneck(BaseModule):
         """
         if self.conv1:
             x = self.conv1(x)
+        if self.fusion_mode == 'add':
+            merged = x
+            if isinstance(self.kernel_sizes, int):
+                pooled = x
+                for _ in range(3):
+                    pooled = self.poolings(pooled)
+                    merged = merged + pooled
+            else:
+                for pooling in self.poolings:
+                    merged = merged + pooling(x)
+            return self.conv2(merged)
         if isinstance(self.kernel_sizes, int):
             y1 = self.poolings(x)
             y2 = self.poolings(y1)
@@ -1458,6 +1478,8 @@ class CSPLayerWithTwoConv(BaseModule):
         init_cfg (:obj:`ConfigDict` or dict or list[dict] or
             list[:obj:`ConfigDict`], optional): Initialization config dict.
             Defaults to None.
+        fusion_mode (str): Branch fusion, 'concat' or 'add'.
+            Defaults to 'concat'.
     """
 
     def __init__(
@@ -1470,8 +1492,12 @@ class CSPLayerWithTwoConv(BaseModule):
             conv_cfg: OptConfigType = None,
             norm_cfg: ConfigType = dict(type='BN', momentum=0.03, eps=0.001),
             act_cfg: ConfigType = dict(type='SiLU', inplace=True),
-            init_cfg: OptMultiConfig = None) -> None:
+            init_cfg: OptMultiConfig = None,
+            fusion_mode: str = 'concat') -> None:
         super().__init__(init_cfg=init_cfg)
+        if fusion_mode not in ('concat', 'add'):
+            raise ValueError("fusion_mode must be 'concat' or 'add'")
+        self.fusion_mode = fusion_mode
 
         self.mid_channels = int(out_channels * expand_ratio)
         self.main_conv = ConvModule(
@@ -1481,8 +1507,11 @@ class CSPLayerWithTwoConv(BaseModule):
             conv_cfg=conv_cfg,
             norm_cfg=norm_cfg,
             act_cfg=act_cfg)
+        final_in_channels = (2 + num_blocks) * self.mid_channels
+        if fusion_mode == 'add':
+            final_in_channels = self.mid_channels
         self.final_conv = ConvModule(
-            (2 + num_blocks) * self.mid_channels,
+            final_in_channels,
             out_channels,
             1,
             conv_cfg=conv_cfg,
@@ -1510,6 +1539,13 @@ class CSPLayerWithTwoConv(BaseModule):
         # x_main.extend(blocks(x_main[-1]) for blocks in self.blocks)
         ## Modified code
         first_half, second_half = x_main.split((self.mid_channels, self.mid_channels), 1)
+        if self.fusion_mode == 'add':
+            merged = first_half + second_half
+            last_block = second_half
+            for block in self.blocks:
+                last_block = block(last_block)
+                merged = merged + last_block
+            return self.final_conv(merged)
         out = [first_half,second_half]
         last_block = second_half
         for block in self.blocks:

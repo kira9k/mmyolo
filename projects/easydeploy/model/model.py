@@ -155,7 +155,10 @@ class DeployModel(nn.Module):
                                                   self.num_classes)
             for cls_score in cls_scores
         ]
-        cls_scores = torch.cat(flatten_cls_scores, dim=1).sigmoid()
+        flat_scores = torch.cat(flatten_cls_scores, dim=1)
+        cls_scores = (self.baseHead._activate_cls_scores(flat_scores)
+                      if isinstance(self.baseHead, YOLOv8Head) else
+                      flat_scores.sigmoid())
 
         flatten_bbox_preds = [
             bbox_pred.permute(0, 2, 3, 1).reshape(num_imgs, -1, 4)
@@ -203,6 +206,11 @@ class DeployModel(nn.Module):
         if self.with_postprocess:
             return self.pred_by_feat(*neck_outputs)
         else:
+            if (isinstance(self.baseHead, YOLOv8Head)
+                    and self.baseHead.export_score_activation):
+                neck_outputs = (
+                    [self.baseHead._activate_cls_scores(score)
+                     for score in neck_outputs[0]], neck_outputs[1])
             outputs = []
             if self.transpose:
                 for feats in zip(*neck_outputs):
