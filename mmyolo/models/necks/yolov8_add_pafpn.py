@@ -112,10 +112,12 @@ class YOLOv8AddPAFPN(YOLOv8PAFPN):
             self._bottom_up_channels(idx), self.out_channels[idx + 1])
 
     def forward(self, inputs: List[torch.Tensor]) -> tuple:
-        if len(inputs) != self.num_in_channels:
+        if isinstance(inputs, (list, tuple)) and len(inputs) != self.num_in_channels:
             raise ValueError('Input feature count must match in_channels')
+        # Index the fixed feature levels so FX does not iterate over a Proxy.
         reduce_outs = [
-            layer(feat) for layer, feat in zip(self.reduce_layers, inputs)
+            self.reduce_layers[idx](inputs[idx])
+            for idx in range(self.num_in_channels)
         ]
         inner_outs = [reduce_outs[-1]]
         for layer_idx, idx in enumerate(

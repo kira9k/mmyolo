@@ -100,6 +100,32 @@ def build_model_from_cfg(config_path, checkpoint_path, device):
     model.eval()
     return model
 
+def rename_outputs(model, names):
+    if len(names) != len(model.graph.output) or len(set(names)) != len(names):
+        raise ValueError('Expected one unique name per ONNX output')
+    old_names = [output.name for output in model.graph.output]
+    used_names = {
+        name for node in model.graph.node
+        for name in (*node.input, *node.output)
+    }
+    values = [*model.graph.input, *model.graph.output,
+              *model.graph.value_info, *model.graph.initializer]
+    used_names.update(value.name for value in values)
+    replacements = {}
+    for name in set(names) & (used_names - set(old_names)):
+        candidate = name + '_internal'
+        while candidate in used_names or candidate in names:
+            candidate += '_internal'
+        replacements[name] = candidate
+        used_names.add(candidate)
+    replacements.update(zip(old_names, names))
+    for node in model.graph.node:
+        for field in (node.input, node.output):
+            for index, name in enumerate(field):
+                field[index] = replacements.get(name, name)
+    for value in values:
+        value.name = replacements.get(value.name, value.name)
+
 def main():
     args = parse_args()
     mkdir_or_exist(args.work_dir)
@@ -135,8 +161,12 @@ def main():
 
     baseModel = build_model_from_cfg(args.config, args.checkpoint, args.device)
     input_channels = baseModel.backbone.input_channels
+    deploy_cfg = baseModel.cfg.get('deploy_cfg', {})
+    raw_output_format = deploy_cfg.get('raw_output_format', 'separate')
+    if args.model_only:
+        output_names = deploy_cfg.get('output_names')
 
-    if args.export_type is None:
+    if args.export_type is None and not args.model_only:
         is_yolov5_or_yolov7 = isinstance(baseModel.bbox_head.head_module, (YOLOv5HeadModule, YOLOv7HeadModule, YOLOv8HeadModule))
         args.export_type = 'YOLOv5' if is_yolov5_or_yolov7 else args.export_type
         postprocess_cfg.export_type = args.export_type
@@ -177,7 +207,8 @@ def main():
     load_checkpoint(baseModel, args.checkpoint, map_location='cpu')
 
     deploy_model = DeployModel(
-        baseModel=baseModel, backend=backend, postprocess_cfg=postprocess_cfg)
+        baseModel=baseModel, backend=backend, postprocess_cfg=postprocess_cfg,
+        raw_output_format=raw_output_format)
     deploy_model.eval()
 
     fake_input = torch.randn(args.batch_size, input_channels,
@@ -190,15 +221,21 @@ def main():
         os.path.basename(args.checkpoint).replace('pth', 'onnx'))
     # export onnx
     with BytesIO() as f:
+        # Torch debug names cannot be numeric; assign reference names in ONNX.
+        export_output_names = (
+            [f'raw_output_{index}' for index in range(len(output_names))]
+            if args.model_only and output_names else output_names)
         torch.onnx.export(
             deploy_model,
             fake_input,
             f,
             input_names=['images'],
-            output_names=output_names,
+            output_names=export_output_names,
             opset_version=args.opset)
         f.seek(0)
         onnx_model = onnx.load(f)
+        if args.model_only and output_names:
+            rename_outputs(onnx_model, output_names)
         onnx.checker.check_model(onnx_model)
 
         # Fix tensorrt onnx output shape, just for view

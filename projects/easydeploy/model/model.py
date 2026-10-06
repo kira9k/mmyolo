@@ -27,11 +27,15 @@ class DeployModel(nn.Module):
     def __init__(self,
                  baseModel: nn.Module,
                  backend: MMYOLOBackend,
-                 postprocess_cfg: Optional[ConfigDict] = None):
+                 postprocess_cfg: Optional[ConfigDict] = None,
+                 raw_output_format: str = 'separate'):
         super().__init__()
+        if raw_output_format not in ('separate', 'combined'):
+            raise ValueError('raw_output_format must be separate or combined')
         self.baseModel = baseModel
         self.baseHead = baseModel.bbox_head
         self.backend = backend
+        self.raw_output_format = raw_output_format
         if postprocess_cfg is None:
             self.with_postprocess = False
         else:
@@ -224,10 +228,10 @@ class DeployModel(nn.Module):
                         outputs.append(torch.cat(feats, 1).permute(0, 2, 3, 1))
             else:
                 for feats in zip(*neck_outputs):
-                    #outputs.append(torch.cat(feats, 1))
-                    #print(feats[0].shape)
-                    #print(feats[1].shape)
-                    out_feats = (feats[0], feats[1])
+                    if self.raw_output_format == 'combined':
+                        out_feats = torch.cat(feats, dim=1)
+                    else:
+                        out_feats = (feats[0], feats[1])
                     outputs.append(out_feats)
             return tuple(outputs)
 

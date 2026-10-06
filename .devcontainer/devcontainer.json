@@ -40,7 +40,6 @@
         "source=${env:HOME}/.cache,target=/root/.cache,type=bind"
     ],
     //"postCreateCommand": "pip install -e . && pip install onnxruntime",
-    // ДОБАВЛЯЕМ ЭТУ СЕКЦИЮ:
     "postStartCommand": "sed -i 's/checkpoint = torch.load(filename, map_location=map_location)/checkpoint = torch.load(filename, map_location=map_location, weights_only=False)/' /opt/conda/lib/python3.11/site-packages/mmengine/runner/checkpoint.py && echo '✅ Checkpoint fix applied'",
     "remoteUser": "root",
     "containerEnv": {
