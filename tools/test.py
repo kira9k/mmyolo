@@ -2,7 +2,8 @@
 import argparse
 import os
 import os.path as osp
-
+from pathlib import Path
+from clearml import Task
 from mmdet.engine.hooks.utils import trigger_visualization_hook
 from mmdet.utils import setup_cache_size_limit_of_dynamo
 from mmengine.config import Config, ConfigDict, DictAction
@@ -184,8 +185,43 @@ def main():
             runner.model.bbox_head.head_module = xmodelopt.surgery.v1.convert_to_lite_model(runner.model.bbox_head.head_module)
         runner.model = runner.wrap_model(runner.cfg.get('model_wrapper_cfg'), runner.model)
     print("\n\n model summary : \n",runner.model)   
-    runner.test()
+    # print(cfg.work_dir)
+    # metrics = runner.test()
+    # print(metrics)
+    # task_name = f'{args.config}__{cfg.load_from}'
+    # clearml_task = Task.init(
+    #     project_name='MMYOLO Tests',
+    #     task_name=task_name,
+    #     task_type=Task.TaskTypes.testing,
+    #     reuse_last_task_id=False
+    # )
+    # clearml_task.connect(
+    #     {
+    #         'config': args.config,
+    #         'checkpoint': args.checkpoint,
+    #         'mean' : cfg.model.data_preprocessor.mean,
+    #         'std' : cfg.model.data_preprocessor.std,
+    #         'train_dataset' : cfg.data_root,
+    #         'test_dataset' : cfg.test_dataloader.dataset.data_root,
+    #         'work_dir' : cfg.work_dir
+    #     },
+    #     name='test'
+    # )
 
+    # clearml_logger = clearml_task.get_logger()
+    # for name, value in metrics.items():
+    #     print(f'{name}: {value}')
 
+    #     try:
+    #         clearml_logger.report_scalar(
+    #             title='Test metrics',
+    #             series=name,
+    #             value=float(value),
+    #             iteration=0
+    #         )
+    #     except (TypeError, ValueError):
+    #         print(f'ClearML: skip non-scalar metric {name}: {value}')
+
+    # clearml_task.close()
 if __name__ == '__main__':
     main()

@@ -65,6 +65,7 @@ class YOLOv5HeadModule(BaseModule):
 
         self.featmap_strides = featmap_strides
         self.num_out_attrib = 5 + self.num_classes
+        #self.num_out_attrib = 5# + self.num_classes
         self.num_levels = len(self.featmap_strides)
         self.num_base_priors = num_base_priors
 
@@ -126,10 +127,11 @@ class YOLOv5HeadModule(BaseModule):
         pred_map = pred_map.view(bs, self.num_base_priors, self.num_out_attrib,
                                  ny, nx)
 
-        cls_score = pred_map[:, :, 5:, ...].reshape(bs, -1, ny, nx)
+        #cls_score = pred_map[:, :, 5:, ...].reshape(bs, -1, ny, nx)
         bbox_pred = pred_map[:, :, :4, ...].reshape(bs, -1, ny, nx)
         objectness = pred_map[:, :, 4:5, ...].reshape(bs, -1, ny, nx)
 
+        cls_score = torch.ones(bs, self.num_base_priors * 1, ny, nx, device=x.device)
         return cls_score, bbox_pred, objectness
 
 
@@ -315,6 +317,8 @@ class YOLOv5Head(BaseDenseHead):
             - bboxes (Tensor): Has a shape (num_instances, 4),
               the last dimension 4 arrange as (x1, y1, x2, y2).
         """
+        if cls_scores is None:
+            cls_scores = [torch.ones_like(bp[:, :1, ...]) for bp in bbox_preds]
         assert len(cls_scores) == len(bbox_preds)
         objectnesses = None if not self.objectness else objectnesses
         if objectnesses is None:
@@ -547,6 +551,7 @@ class YOLOv5Head(BaseDenseHead):
             batch_gt_instances, batch_img_metas)
 
         device = cls_scores[0].device
+        #device = bbox_preds[0].device
         loss_cls = torch.zeros(1, device=device)
         loss_box = torch.zeros(1, device=device)
         loss_obj = torch.zeros(1, device=device)
@@ -582,7 +587,8 @@ class YOLOv5Head(BaseDenseHead):
             # no gt bbox matches anchor
             if batch_targets_scaled.shape[0] == 0:
                 loss_box += bbox_preds[i].sum() * 0
-                loss_cls += cls_scores[i].sum() * 0
+                loss_cls += 0 #cls_scores[i].sum() * 0
+                #loss_cls += cls_scores[i].sum() * 0
                 loss_obj += self.loss_obj(
                     objectnesses[i], target_obj) * self.obj_level_weights[i]
                 continue
@@ -647,7 +653,8 @@ class YOLOv5Head(BaseDenseHead):
                              class_inds] = 1.
                 loss_cls += self.loss_cls(pred_cls_scores, target_class)
             else:
-                loss_cls += cls_scores[i].sum() * 0
+                #loss_cls += cls_scores[i].sum() * 0
+                loss_cls = loss_cls
 
         _, world_size = get_dist_info()
         return dict(

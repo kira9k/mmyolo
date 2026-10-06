@@ -14,7 +14,6 @@ docker run --name $CONTAINER_NAME --gpus all --shm-size=16g \
 
 sleep 2
 
-# Патчим файл
 docker exec $CONTAINER_NAME sed -i \
 "s/checkpoint = torch.load(filename, map_location=map_location)/checkpoint = torch.load(filename, map_location=map_location, weights_only=False)/" \
 /opt/conda/lib/python3.11/site-packages/mmengine/runner/checkpoint.py

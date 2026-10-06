@@ -2,16 +2,16 @@ _base_ = ['../_base_/default_runtime.py', '../_base_/det_p5_tta.py']
 
 # ========================Frequently modified parameters======================
 # -----data related-----
-data_root = 'data/train_val_2/'  # Root path of data
-data_root_test = 'data/test_data/'  # Root path of data for testing
+data_root = 'data/small_people_v3/'  # Root path of data
+data_root_test = 'data/test_data/vid16_test/'  # Root path of data for testing
 # Path of train annotation file
 train_ann_file = 'train/ann.json'
 train_data_prefix = 'train/images'  # Prefix of train image path
 # Path of val annotation file
 val_ann_file = 'val/ann.json'
 val_data_prefix = 'val/images'  # Prefix of val image path
-test_ann_file = 'vid16_test/ann.json'
-test_data_prefix = 'vid16_test/images'
+test_ann_file = 'ann.json'
+test_data_prefix = 'images'
 num_classes = 1  # Number of classes for classification
 # Batch size of a single GPU during training
 train_batch_size_per_gpu = 16
@@ -21,12 +21,12 @@ train_num_workers = 8
 persistent_workers = True
 
 ##FINE-tune from a pretrained model.
-#load_from = '/home/kira9k/ieos/mmyolo/work_dirs/yolov8_s_big_dataset_2/best_coco_bbox_mAP_epoch_210.pth'
+#load_from = '/mmyolo/work_dirs/yolov8_s_small_dataset_v3/best_coco_bbox_mAP_epoch_30.pth'
 
 # -----train val related-----
 # Base learning rate for optim_wrapper. Corresponding to 8xb16=64 bs
 base_lr = 0.01
-max_epochs = 500 # Maximum training epochs
+max_epochs = 500 #500 # Maximum training epochs
 # Disable mosaic augmentation for final 10 epochs (stage 2)
 close_mosaic_epochs = 10
 
@@ -41,7 +41,8 @@ model_test_cfg = dict(
 
 # ========================Possible modified parameters========================
 # -----data related-----
-img_scale = (640, 640)  # width, height
+img_scale = (640, 640)
+#img_scale = (640, 640)  # width, height
 # Dataset type, this will be used to define the dataset
 dataset_type = 'YOLOv5CocoDataset'
 # Batch size of a single GPU during validation
@@ -104,8 +105,10 @@ model = dict(
     type='YOLODetector',
     data_preprocessor=dict(
         type='YOLOv5DetDataPreprocessor',
+        #mean=[86.7, 86.7, 86.7],
+        #std=[58.65, 58.65, 58.65],
         mean=[0., 0., 0.],
-        std = [1., 1., 1.],#std=[255., 255., 255.],
+        std=[255., 255., 255.],
         bgr_to_rgb=True),
     backbone=dict(
         type='YOLOv8CSPDarknet',
@@ -167,9 +170,9 @@ model = dict(
     test_cfg=model_test_cfg)
 
 albu_train_transforms = [
-    dict(type='Blur', p=0.01),
-    dict(type='MedianBlur', p=0.01),
-    dict(type='ToGray', p=0.01),
+    #dict(type='Blur', p=0.01),
+    #dict(type='MedianBlur', p=0.01),
+    #dict(type='ToGray', p=0.01),
     dict(type='CLAHE', p=0.01)
 ]
 
@@ -179,6 +182,7 @@ pre_transform = [
 ]
 
 last_transform = [
+    #dict(type='MyInvert', p=0.05),
     dict(
         type='mmdet.Albu',
         transforms=albu_train_transforms,
@@ -214,6 +218,31 @@ train_pipeline = [
         # img_scale is (width, height)
         border=(-img_scale[0] // 2, -img_scale[1] // 2),
         border_val=(114, 114, 114)),
+    # === Thermal augmentations ===
+    dict(type='ThermalJitter',
+         bias_range=(-0.1, 0.1),
+         gain_range=(0.8, 1.3),
+         gamma_prob=0.6,
+         gamma_range=(0.7, 1.4)),
+    dict(type='ThermalSensorNoise',
+         gaussian_prob=0.5,
+         sigma_range=(0.8, 7.0),
+         salt_pepper_prob=0.2,
+         salt_pepper_ratio=0.002),
+    dict(type='AtmosphericEffect',
+         prob=0.4,
+         alpha_range=(0.05, 0.18)),
+    dict(type='LocalContrast',
+         prob=0.5,
+         strength=0.6),
+    dict(type='ThermalGaussianBlur',
+         prob=0.3,
+         sigma_range=(0.5, 2.0)),
+    dict(type='ThermalRandomErasing',
+         prob=0.3,
+         num_area_range=(1, 3),
+         hole_size_range=(24, 64)),
+    # === End thermal augmentations ===
     *last_transform
 ]
 
@@ -258,6 +287,8 @@ test_pipeline = [
         scale=img_scale,
         allow_scale_up=False,
         pad_val=dict(img=114)),
+    ###для инвертации
+    dict(type='MyInvert', p=0.),
     dict(type='LoadAnnotations', with_bbox=True, _scope_='mmdet'),
     dict(
         type='mmdet.PackDetInputs',
@@ -350,7 +381,7 @@ val_evaluator = dict(
 test_evaluator = dict(
     type='mmdet.CocoMetric',
     proposal_nums=(100, 1, 10),
-    ann_file=data_root_test + test_ann_file,   # ← важно указать именно тестовый ann.json
+    ann_file=data_root_test + test_ann_file,   
     metric='bbox'
 )
 

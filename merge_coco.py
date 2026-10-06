@@ -143,15 +143,15 @@ def merge_with_30percent(
 # ======================= ЗАПУСК =======================
 if __name__ == "__main__":
     merge_with_30percent(
-        dataset2_dir="data/train_val_2/",
+        dataset2_dir="/home/kira9k/ieos/make_dataset/coco_dataset_split/",
         dataset2_train_ann="train/ann.json",
         dataset2_val_ann="val/ann.json",
 
-        dataset1_dir="data/train_val_small_v2/",
+        dataset1_dir="/home/kira9k/ieos/mmyolo/data/v3/",
         dataset1_train_ann="train/ann.json",
         dataset1_val_ann="val/ann.json",
 
-        output_dir="data/data/combined_100_percent_2025_v2",
+        output_dir="data/combined_100_percent_v3_with_my_data",
         prefix2="old_",
-        keep_ratio=1   # ← можно поставить 0.2, 0.4 и т.д.
+        keep_ratio=0.7   # ← можно поставить 0.2, 0.4 и т.д.
     )

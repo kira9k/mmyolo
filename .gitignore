@@ -124,3 +124,15 @@ yolov5-6.1/
 *.pt
 *.py~
 *.sh~
+
+## Extra options
+weights/
+invert_images.py
+check_params.py
+onnx_to_torch.py
+yolov8_check.py
+check_pt.py
+pt_to_onnx.py
+pt_inference.py
+fix_coco.py
+merge_coco.py

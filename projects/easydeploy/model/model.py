@@ -175,6 +175,10 @@ class DeployModel(nn.Module):
 
         bboxes = bbox_decoder(flatten_priors[None], flatten_bbox_preds,
                               flatten_stride)
+        #print("========================")
+        return_separate_heads = False
+        if return_separate_heads:
+            return flatten_bbox_preds, cls_scores
 
         return nms_func(bboxes, scores, self.keep_top_k, self.iou_threshold,
                         self.score_threshold, self.pre_top_k, self.keep_top_k, export_type=self.export_type)
@@ -195,6 +199,7 @@ class DeployModel(nn.Module):
 
     def forward(self, inputs: Tensor):
         neck_outputs = self.baseModel(inputs)
+        #print("======",neck_outputs)
         if self.with_postprocess:
             return self.pred_by_feat(*neck_outputs)
         else:
@@ -211,7 +216,11 @@ class DeployModel(nn.Module):
                         outputs.append(torch.cat(feats, 1).permute(0, 2, 3, 1))
             else:
                 for feats in zip(*neck_outputs):
-                    outputs.append(torch.cat(feats, 1))
+                    #outputs.append(torch.cat(feats, 1))
+                    #print(feats[0].shape)
+                    #print(feats[1].shape)
+                    out_feats = (feats[0], feats[1])
+                    outputs.append(out_feats)
             return tuple(outputs)
 
     @staticmethod

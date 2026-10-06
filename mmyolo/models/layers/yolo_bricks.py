@@ -1517,6 +1517,21 @@ class CSPLayerWithTwoConv(BaseModule):
             out.append(last_block)
         
         return self.final_conv(torch.cat(out, 1))
+    # def forward(self, x: Tensor) -> Tensor:
+    #     x_main = self.main_conv(x)
+    #     c = self.mid_channels
+        
+    #     first_half = x_main[:, :c, :, :]
+    #     second_half = x_main[:, c:, :, :]
+
+    #     parts = (first_half, second_half)
+    #     last_block = second_half
+        
+    #     for block in self.blocks:
+    #         last_block = block(last_block)
+    #         parts = parts + (last_block,)  # Добавляем как кортеж
+        
+    #     return self.final_conv(torch.cat(parts, 1))
 
 
 class BiFusion(nn.Module):

@@ -1,3 +1,52 @@
+# FROM pytorch/pytorch:2.7.1-cuda12.8-cudnn9-devel
+
+# ENV DEBIAN_FRONTEND=noninteractive \
+#     FORCE_CUDA=1 \
+#     TORCH_CUDA_ARCH_LIST="8.9+PTX" \
+#     PIP_USE_PEP517=0
+
+# RUN apt-get update && apt-get install -y \
+#     git \
+#     libgl1 \
+#     libglib2.0-0 \
+#     ninja-build \
+#     build-essential \
+#     && apt-get clean \
+#     && rm -rf /var/lib/apt/lists/*
+
+# RUN pip install --upgrade pip && \
+#     pip install --no-cache-dir \
+#         numpy==2.2.6 \
+#         openmim
+
+# RUN mim install --no-cache-dir \
+#         mmengine==0.10.7 \
+#         #mmcv==2.1.0 \
+#         mmdet==3.3.0
+
+# RUN git clone --depth 1 --branch v2.1.0 https://github.com/open-mmlab/mmcv.git /tmp/mmcv && \
+#     cd /tmp/mmcv && \
+#     #pip install -r requirements/optional.txt && \
+#     #MMCV_WITH_OPS=1 python setup.py develop && \
+#     pip install pip==24.0 --force-reinstall && \
+#     MMCV_WITH_OPS=1 pip install . --no-build-isolation --no-cache-dir && \
+#     cd ../../
+
+# WORKDIR /mmyolo
+# COPY . /mmyolo
+
+# RUN pip install --upgrade pip setuptools wheel &&\
+#     pip install --no-cache-dir --no-build-isolation -r requirements/albu.txt &&\
+#     pip install --no-cache-dir prettytable && \
+#     pip install --no-cache-dir onnx==1.13.0 && \
+#     pip install --no-cache-dir git+https://github.com/TexasInstruments/edgeai-modeloptimization.git@r9.1#subdirectory=torchmodelopt
+
+
+# RUN pip install pip==24.0 --force-reinstall && \
+#     pip install --no-cache-dir -v -e . --no-build-isolation && \
+#     pip install onnxruntime
+
+
 FROM pytorch/pytorch:2.7.1-cuda12.8-cudnn9-devel
 
 ENV DEBIAN_FRONTEND=noninteractive \
@@ -14,34 +63,32 @@ RUN apt-get update && apt-get install -y \
     && apt-get clean \
     && rm -rf /var/lib/apt/lists/*
 
-RUN pip install --upgrade pip && \
-    pip install --no-cache-dir \
-        numpy==2.2.6 \
-        openmim
+# Устанавливаем совместимый numpy и openmim
+RUN pip install --upgrade pip setuptools wheel && \
+    pip install --no-cache-dir numpy==1.26.4 openmim
 
-RUN mim install --no-cache-dir \
-        mmengine==0.10.7 \
-        #mmcv==2.1.0 \
-        mmdet==3.3.0
+# Устанавливаем mmengine и mmdet через mim
+RUN mim install --no-cache-dir mmengine==0.10.7 mmdet==3.3.0
 
+# Клонируем и собираем mmcv с OPS (фиксируем pip версию 24.0, чтобы избежать конфликтов)
 RUN git clone --depth 1 --branch v2.1.0 https://github.com/open-mmlab/mmcv.git /tmp/mmcv && \
     cd /tmp/mmcv && \
-    #pip install -r requirements/optional.txt && \
-    #MMCV_WITH_OPS=1 python setup.py develop && \
     pip install pip==24.0 --force-reinstall && \
     MMCV_WITH_OPS=1 pip install . --no-build-isolation --no-cache-dir && \
-    cd ../../
+    cd /
 
 WORKDIR /mmyolo
 COPY . /mmyolo
 
-RUN pip install --upgrade pip &&\
-    pip install --no-cache-dir -r requirements/albu.txt &&\
-    pip install --no-cache-dir prettytable && \
-    pip install --no-cache-dir onnx==1.13.0 && \
+# Устанавливаем зависимости mmyolo, но с обходом проблемы albumentations
+RUN pip install --upgrade pip setuptools wheel && \
+    # Сначала отдельно устанавливаем albumentations (стабильная версия 1.4.0 без проблем с pkg_resources)
+    pip install --no-cache-dir --no-build-isolation albumentations==1.4.0 && \
+    # Затем остальные зависимости из requirements/albu.txt (если там что-то ещё, кроме albumentations)
+    (pip install --no-cache-dir -r requirements/albu.txt 2>/dev/null || true) && \
+    pip install --no-cache-dir prettytable onnx==1.13.0 && \
     pip install --no-cache-dir git+https://github.com/TexasInstruments/edgeai-modeloptimization.git@r9.1#subdirectory=torchmodelopt
 
-
-RUN pip install pip==24.0 --force-reinstall && \
-    pip install --no-cache-dir -v -e . --no-build-isolation && \
+# Финальная установка mmyolo в режиме редактирования
+RUN pip install --no-cache-dir -v -e . --no-build-isolation && \
     pip install onnxruntime

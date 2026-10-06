@@ -7,6 +7,7 @@ from .transforms import (FilterAnnotations, LetterResize, LoadAnnotations,
                          RemoveDataElement, Resize, YOLOv5CopyPaste,
                          YOLOv5HSVRandomAug, YOLOv5KeepRatioResize,
                          YOLOv5RandomAffine)
+from .CustomAug import MyInvert, ThermalRandomErasing, ThermalGaussianBlur, LocalContrast, AtmosphericEffect, ThermalSensorNoise, ThermalJitter
 
 __all__ = [
     'YOLOv5KeepRatioResize', 'LetterResize', 'Mosaic', 'YOLOXMixUp',
@@ -14,5 +15,6 @@ __all__ = [
     'YOLOv5RandomAffine', 'PPYOLOERandomDistort', 'PPYOLOERandomCrop',
     'Mosaic9', 'YOLOv5CopyPaste', 'RemoveDataElement', 'RegularizeRotatedBox',
     'Polygon2Mask', 'PackDetInputs', 'RandomAffine', 'RandomFlip', 'Resize',
-    'FilterAnnotations'
+    'FilterAnnotations', 'MyInvert', 'ThermalRandomErasing', 'ThermalGaussianBlur', 
+    'LocalContrast', 'AtmosphericEffect', 'ThermalSensorNoise', 'ThermalJitter'
 ]
