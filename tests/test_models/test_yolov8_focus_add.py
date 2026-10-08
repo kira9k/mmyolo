@@ -23,8 +23,12 @@ CONFIG = ROOT / 'configs/yolov8/yolov8_n_focus_add_surgery2.py'
 
 class TestYOLOv8FocusAdd(TestCase):
 
+    config_path = CONFIG
+    widen_factor = 0.25
+    stem_channels = 32
+
     def build_model(self):
-        cfg = Config.fromfile(CONFIG)
+        cfg = Config.fromfile(self.config_path)
         model = MODELS.build(cfg.model)
         model.cfg = cfg
         return cfg, model
@@ -34,10 +38,14 @@ class TestYOLOv8FocusAdd(TestCase):
         self.assertIsInstance(model.backbone.stem, nn.Identity)
         self.assertEqual(len(model.backbone.stage1), 1)
         first = model.backbone.stage1[0].main_conv.conv
-        self.assertEqual((first.in_channels, first.out_channels), (16, 32))
+        self.assertEqual((first.in_channels, first.out_channels),
+                         (16, self.stem_channels))
         self.assertEqual(first.kernel_size, (3, 3))
         self.assertEqual(first.stride, (1, 1))
-        self.assertEqual(cfg.model.backbone.widen_factor, 0.25)
+        self.assertEqual(cfg.model.backbone.widen_factor, self.widen_factor)
+        self.assertEqual(cfg.model.neck.widen_factor, self.widen_factor)
+        self.assertEqual(cfg.model.bbox_head.head_module.widen_factor,
+                         self.widen_factor)
         self.assertIsNone(cfg.load_from)
         self.assertFalse(cfg.resume)
         for part in (model.backbone, model.neck, model.bbox_head.head_module):
@@ -100,8 +108,9 @@ class TestYOLOv8FocusAdd(TestCase):
                         data_samples=dict(bboxes_labels=torch.empty(0, 6))),
                     training=True)
 
-    @skipUnless(importlib.util.find_spec('edgeai_torchmodelopt'),
-                'edgeai_torchmodelopt is not installed')
+    @skipUnless(
+        importlib.util.find_spec('edgeai_torchmodelopt'),
+        'edgeai_torchmodelopt is not installed')
     def test_surgery2_training_step(self):
         from edgeai_torchmodelopt import xmodelopt
 
@@ -141,7 +150,7 @@ class TestYOLOv8FocusAdd(TestCase):
 
     def export_args(self, directory):
         return SimpleNamespace(
-            config=str(CONFIG),
+            config=str(self.config_path),
             checkpoint=str(Path(directory) / 'epoch_1.pth'),
             work_dir=directory,
             backend='onnxruntime',
@@ -154,11 +163,13 @@ class TestYOLOv8FocusAdd(TestCase):
             simplify=False,
             opset=11)
 
-    @skipUnless(importlib.util.find_spec('edgeai_torchmodelopt'),
-                'edgeai_torchmodelopt is not installed')
+    @skipUnless(
+        importlib.util.find_spec('edgeai_torchmodelopt'),
+        'edgeai_torchmodelopt is not installed')
     @skipUnless(importlib.util.find_spec('onnx'), 'onnx is not installed')
-    @skipUnless(importlib.util.find_spec('onnxruntime'),
-                'onnxruntime is not installed')
+    @skipUnless(
+        importlib.util.find_spec('onnxruntime'),
+        'onnxruntime is not installed')
     def test_onnx_export_topology_metadata_and_runtime(self):
         import onnx
         import onnxruntime as ort
@@ -212,6 +223,12 @@ class TestYOLOv8FocusAdd(TestCase):
                 [node.op_type for node in upstream if node.op_type == 'Conv'],
                 ['Conv'])
             self.assertEqual(value, 'images')
+            first_conv = next(node for node in upstream
+                              if node.op_type == 'Conv')
+            first_weight = next(weight for weight in graph.graph.initializer
+                                if weight.name == first_conv.input[1])
+            self.assertEqual(
+                list(first_weight.dims), [self.stem_channels, 16, 3, 3])
             operators = {node.op_type for node in graph.graph.node}
             self.assertTrue({'Relu', 'Add'} <= operators)
             self.assertFalse(operators
@@ -243,8 +260,9 @@ class TestYOLOv8FocusAdd(TestCase):
                     atol=5e-4,
                     rtol=1e-4)
 
-    @skipUnless(importlib.util.find_spec('edgeai_torchmodelopt'),
-                'edgeai_torchmodelopt is not installed')
+    @skipUnless(
+        importlib.util.find_spec('edgeai_torchmodelopt'),
+        'edgeai_torchmodelopt is not installed')
     def test_pt_export_roundtrip(self):
         from projects.easydeploy.tools import export_pt
 
@@ -279,3 +297,10 @@ class TestYOLOv8FocusAdd(TestCase):
                 (torch.tensor([-10. - level]), torch.arange(64) + 100 * level))
             torch.testing.assert_close(
                 head, expected[None, :, None, None].expand_as(head))
+
+
+class TestYOLOv8SFocusAdd(TestYOLOv8FocusAdd):
+
+    config_path = ROOT / 'configs/yolov8/yolov8_s_focus_add_surgery2.py'
+    widen_factor = 0.5
+    stem_channels = 64

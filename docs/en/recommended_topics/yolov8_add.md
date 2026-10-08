@@ -16,6 +16,7 @@
 | `configs/yolov8/yolov8_s_add_surgery2.py` | Add | Add | Add |
 | `configs/yolov8/yolov8_s_add_surgery2_fine_tune.py` | Add | Add | Add |
 | `configs/yolov8/yolov8_n_focus_add_surgery2.py` | Add | Add | Add |
+| `configs/yolov8/yolov8_s_focus_add_surgery2.py` | Add | Add | Add |
 
 Первые две конфигурации наследуют существующий конфиг обучения YOLOv8-s,
 включая настройки локального датасета. Вариант дообучения использует обучающую
@@ -147,7 +148,7 @@ python projects/easydeploy/tools/export_pt.py "$CONFIG" "$CHECKPOINT" \
 При экспорте без `--model-surgery` PT-экспортёр сохраняет Python-модель
 через `torch.save`, это другой формат загрузки.
 
-## YOLOv8n с внешним Focus4
+## YOLOv8n/s с внешним Focus4
 
 `yolov8_n_focus_add_surgery2.py` задаёт новую nano-архитектуру для
 упакованного grayscale-входа. В отличие от преобразования старых весов
@@ -189,6 +190,30 @@ python projects/easydeploy/tools/export_pt.py "$CONFIG" "$CHECKPOINT" \
   --work-dir work_dirs/yolov8_n_focus_add_surgery2/pt --device cpu
 ```
 
+Вариант `yolov8_s_focus_add_surgery2.py` наследует настройки Focus4,
+grayscale, Add и ReLU от nano-варианта, но использует коэффициент ширины
+0.5 в backbone, neck и голове. Поэтому перед первым Split стоит одна
+свёртка 3x3 с 16 входными и **64 выходными каналами**, а не 32.
+Коэффициент глубины для обоих вариантов равен 0.33. Вход и формат выходов
+не меняются. Веса n и s не взаимозаменяемы: обучайте s с нуля
+в отдельном каталоге.
+
+```bash
+python tools/train.py configs/yolov8/yolov8_s_focus_add_surgery2.py \
+  --model-surgery 2 --work-dir work_dirs/yolov8_s_focus_add_surgery2
+
+CONFIG=configs/yolov8/yolov8_s_focus_add_surgery2.py
+CHECKPOINT=$(cat work_dirs/yolov8_s_focus_add_surgery2/last_checkpoint)
+
+python projects/easydeploy/tools/export_onnx.py "$CONFIG" "$CHECKPOINT" \
+  --model-only --model-surgery 2 --img-size 640 640 --opset 11 \
+  --work-dir work_dirs/yolov8_s_focus_add_surgery2/onnx --device cpu
+
+python projects/easydeploy/tools/export_pt.py "$CONFIG" "$CHECKPOINT" \
+  --model-only --model-surgery 2 --img-size 640 640 \
+  --work-dir work_dirs/yolov8_s_focus_add_surgery2/pt --device cpu
+```
+
 Аргумент `--img-size 640 640` задаёт размер **до Focus**. Экспортёры читают
 `deploy_cfg.input_spatial_divisor=4` и формируют вход модели
 `(1,16,160,160)` типа float32. Focus не входит в граф инференса: перед
@@ -209,7 +234,7 @@ packed[n, 4 * r + c, y, x] = gray[n, 0, 4 * y + r, 4 * x + c]
 с описанным выше вариантом RGB/ReLU.
 
 Размеры входа, упаковка, один Conv до первого Split, обучение после
-surgery 2 и экспорт проверяются в `test_yolov8_focus_add.py`.
+surgery 2 и экспорт обоих вариантов проверяются в `test_yolov8_focus_add.py`.
 Сохранение точности требует полноценного обучения и оценки на датасете;
 проверочный шаг обучения и численное сравнение экспортов не заменяют mAP.
 
