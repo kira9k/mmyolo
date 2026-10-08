@@ -122,8 +122,15 @@ yolov5-6.1/
 # Pytorch
 *.pth
 *.pt
+*.pt2
+*.onnx
+*.onnx.data
+*.prototxt
 *.py~
 *.sh~
+
+# Accidental shell redirection when installing a version-constrained package
+/=2.0.0rc4,
 
 ## Extra options
 weights/

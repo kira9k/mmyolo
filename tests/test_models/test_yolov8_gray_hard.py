@@ -35,7 +35,8 @@ class TestYOLOv8GrayHard(TestCase):
         self.assertEqual(cfg.default_hooks, original.default_hooks)
         self.assertEqual(cfg.model.test_cfg, original.model.test_cfg)
         self.assertEqual(cfg.model.train_cfg, original.model.train_cfg)
-        self.assertEqual(cfg.train_dataloader.batch_size, 16)
+        self.assertEqual(cfg.train_dataloader.batch_size,
+                         original.train_dataloader.batch_size)
         self.assertEqual(cfg.train_dataloader.dataset.data_root,
                          original.train_dataloader.dataset.data_root)
         self.assertIsNone(cfg.load_from)

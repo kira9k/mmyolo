@@ -364,6 +364,8 @@ class YOLOv5Head(BaseDenseHead):
         ]
         if hasattr(self.head_module, 'reg_max'):
             if self.head_module.reg_max > 1:
+                # Preserve raw DFL logits for subsequent prediction calls.
+                bbox_preds = list(bbox_preds)
                 for scale_idx , _ in enumerate(bbox_preds):
                     b, _, h, w = bbox_preds[scale_idx].shape
                     bbox_preds[scale_idx] = bbox_preds[scale_idx].reshape(

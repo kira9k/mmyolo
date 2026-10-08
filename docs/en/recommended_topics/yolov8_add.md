@@ -13,6 +13,9 @@
 | `configs/yolov8/yolov8_s_add_fine_tune.py` | Add | Add | Add |
 | `configs/yolov8/yolov8_s_add_gray_hard.py` | Add | Add | Add |
 | `configs/yolov8/yolov8_s_add_gray_hard_fine_tune.py` | Add | Add | Add |
+| `configs/yolov8/yolov8_s_add_surgery2.py` | Add | Add | Add |
+| `configs/yolov8/yolov8_s_add_surgery2_fine_tune.py` | Add | Add | Add |
+| `configs/yolov8/yolov8_n_focus_add_surgery2.py` | Add | Add | Add |
 
 Первые две конфигурации наследуют существующий конфиг обучения YOLOv8-s,
 включая настройки локального датасета. Вариант дообучения использует обучающую
@@ -99,6 +102,117 @@ python projects/easydeploy/tools/export_onnx.py \
 Экспорт начальных перенесённых весов полезен для проверки или компиляции
 графа, но не является обученным детектором с новой архитектурой.
 
+## ReLU и surgery 2
+
+Конфигурации `yolov8_s_add_surgery2.py` и
+`yolov8_s_add_surgery2_fine_tune.py` сохраняют трёхканальный RGB-вход.
+В backbone, neck и голове используются ReLU; замены на HSwish или
+Hardsigmoid нет. Для оценок классов сохранён обычный sigmoid, но экспорт
+без постобработки возвращает исходные логиты, до sigmoid.
+
+Обучение с нуля:
+
+```bash
+python tools/train.py configs/yolov8/yolov8_s_add_surgery2.py \
+  --model-surgery 2 --work-dir work_dirs/yolov8_s_add_surgery2
+```
+
+Экспорт в ONNX и TorchScript:
+
+```bash
+CONFIG=configs/yolov8/yolov8_s_add_surgery2.py
+CHECKPOINT=$(cat work_dirs/yolov8_s_add_surgery2/last_checkpoint)
+
+python projects/easydeploy/tools/export_onnx.py "$CONFIG" "$CHECKPOINT" \
+  --model-only --model-surgery 2 --img-size 640 640 --opset 11 \
+  --work-dir work_dirs/yolov8_s_add_surgery2/onnx --device cpu
+
+python projects/easydeploy/tools/export_pt.py "$CONFIG" "$CHECKPOINT" \
+  --model-only --model-surgery 2 --img-size 640 640 \
+  --work-dir work_dirs/yolov8_s_add_surgery2/pt --device cpu
+```
+
+Оба экспортёра возвращают три тензора NCHW:
+`(1,65,80,80)`, `(1,65,40,40)` и `(1,65,20,20)`.
+В каждом выходе канал 0 содержит логит единственного класса, каналы 1..64
+содержат исходные распределения DFL в порядке left, top, right, bottom,
+по 16 значений на сторону. Sigmoid, DFL-декодирование и NMS выполняются
+снаружи модели. Имена выходов ONNX: `583`, `584`, `585`.
+Архитектурные объединения используют Add; три конечных узла Concat
+объединяют каналы класса и координат и остаются в графе намеренно.
+
+Расширение `.pt` при `--model-surgery 2` означает TorchScript:
+загружайте файл через `torch.jit.load`. Это не архив `.pt2` для
+`torch.export.load`; преобразование в PT2 и квантизация выполняются отдельно.
+При экспорте без `--model-surgery` PT-экспортёр сохраняет Python-модель
+через `torch.save`, это другой формат загрузки.
+
+## YOLOv8n с внешним Focus4
+
+`yolov8_n_focus_add_surgery2.py` задаёт новую nano-архитектуру для
+упакованного grayscale-входа. В отличие от преобразования старых весов
+в `quantize_model/pt2_quant`, две исходные свёртки удалены:
+обычный stem и свёртка с шагом 2 в первой стадии backbone.
+Перед первым Split остаётся одна свёртка 3x3 с 16 входными и 32 выходными
+каналами, шагом 1 и padding 1:
+
+```text
+Grayscale (1,1,640,640)
+  -> внешний Focus4 (1,16,160,160)
+  -> Conv 3x3, 16->32, stride=1 -> BN -> ReLU
+  -> Split -> C2f со сложением ветвей
+```
+
+В обучении и валидации `YOLOv5FocusDetDataPreprocessor` сначала выполняет
+обычную нормализацию и дополнение изображения, затем `pixel_unshuffle(..., 4)`.
+Пайплайны, включая Mosaic и заключительную стадию без Mosaic, используют
+grayscale. Координаты аннотаций и метаданные сохраняют исходный масштаб
+640x640, а не размер упакованного тензора 160x160.
+
+Это изменение вычислений модели, а не точная перепараметризация обученных
+свёрток. В конфигурации установлены `load_from=None` и `resume=False`:
+обучайте вариант с нуля в отдельном каталоге.
+
+```bash
+python tools/train.py configs/yolov8/yolov8_n_focus_add_surgery2.py \
+  --model-surgery 2 --work-dir work_dirs/yolov8_n_focus_add_surgery2
+
+CONFIG=configs/yolov8/yolov8_n_focus_add_surgery2.py
+CHECKPOINT=$(cat work_dirs/yolov8_n_focus_add_surgery2/last_checkpoint)
+
+python projects/easydeploy/tools/export_onnx.py "$CONFIG" "$CHECKPOINT" \
+  --model-only --model-surgery 2 --img-size 640 640 --opset 11 \
+  --work-dir work_dirs/yolov8_n_focus_add_surgery2/onnx --device cpu
+
+python projects/easydeploy/tools/export_pt.py "$CONFIG" "$CHECKPOINT" \
+  --model-only --model-surgery 2 --img-size 640 640 \
+  --work-dir work_dirs/yolov8_n_focus_add_surgery2/pt --device cpu
+```
+
+Аргумент `--img-size 640 640` задаёт размер **до Focus**. Экспортёры читают
+`deploy_cfg.input_spatial_divisor=4` и формируют вход модели
+`(1,16,160,160)` типа float32. Focus не входит в граф инференса: перед
+запуском преобразуйте изображение в grayscale, выполните letterbox
+до 640x640 с заполнением 114, нормализуйте делением на 255 и упакуйте
+каналы на CPU. Их порядок соответствует `pixel_unshuffle`:
+
+```python
+packed[n, 4 * r + c, y, x] = gray[n, 0, 4 * y + r, 4 * x + c]
+# r, c = 0, 1, 2, 3
+```
+
+Настройки предобработки записываются в метаданные ONNX под ключом
+`preprocess`, а в TorchScript сохраняются как дополнительный файл
+`preprocess.json`. Эти записи описывают требуемую предобработку, но не
+выполняют её автоматически. Prototxt использует координаты исходного
+изображения 640x640. Порядок каналов и формы трёх выходов совпадают
+с описанным выше вариантом RGB/ReLU.
+
+Размеры входа, упаковка, один Conv до первого Split, обучение после
+surgery 2 и экспорт проверяются в `test_yolov8_focus_add.py`.
+Сохранение точности требует полноценного обучения и оценки на датасете;
+проверочный шаг обучения и численное сравнение экспортов не заменяют mAP.
+
 ## Одноканальный вход и hard sigmoid
 
 Конфигурации grayscale/hard используют настоящий одноканальный вход
@@ -116,7 +230,8 @@ HSwish(x) = x * hard_sigmoid(x)
 яркость, контраст, размытие и геометрические преобразования сохранены.
 Последние десять эпох используют grayscale-пайплайн без Mosaic.
 Конфигурация `yolov8_s_add_gray_hard.py` на 500 эпох наследует исходную
-`yolov8_s_syncbn_fast_8xb16-500e_coco.py`: размер батча 16, LR 0.01,
+`yolov8_s_syncbn_fast_8xb16-500e_coco.py`: размер батча из базового конфига,
+LR 0.01,
 аугментации для тепловизионных изображений, `mean=[0]`, `std=[255]`.
 Нормализация соответствует сохранённой в
 `work_dirs/yolov8_s_small_dataset_v3/best_coco_bbox_mAP_epoch_499.pth`.
@@ -211,6 +326,12 @@ python -m unittest discover \
   -s tests/test_tools -p test_yolov8_add_checkpoint.py -v
 OMP_NUM_THREADS=1 MKL_NUM_THREADS=1 python -m unittest discover \
   -s tests/test_models -p test_yolov8_gray_hard.py -v
+OMP_NUM_THREADS=1 MKL_NUM_THREADS=1 python -m unittest discover \
+  -s tests/test_models -p test_yolov8_add_surgery2.py -v
+OMP_NUM_THREADS=1 MKL_NUM_THREADS=1 python -m unittest discover \
+  -s tests/test_models -p test_yolov8_focus_add.py -v
+OMP_NUM_THREADS=1 MKL_NUM_THREADS=1 python -m unittest discover \
+  -s tests/test_tools -p test_export_pt.py -v
 ```
 
 Тесты проверяют градиенты, прямоугольные входы, проекции каналов, сборку

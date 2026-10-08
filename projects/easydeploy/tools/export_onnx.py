@@ -1,4 +1,5 @@
 import argparse
+import json
 import os
 import sys
 import warnings
@@ -163,6 +164,11 @@ def main():
     input_channels = baseModel.backbone.input_channels
     deploy_cfg = baseModel.cfg.get('deploy_cfg', {})
     raw_output_format = deploy_cfg.get('raw_output_format', 'separate')
+    input_divisor = deploy_cfg.get('input_spatial_divisor', 1)
+    if (not isinstance(input_divisor, int) or input_divisor < 1
+            or any(size % input_divisor for size in args.img_size)):
+        raise ValueError('Image dimensions must be divisible by input_spatial_divisor')
+    input_img_size = [size // input_divisor for size in args.img_size]
     if args.model_only:
         output_names = deploy_cfg.get('output_names')
 
@@ -212,7 +218,7 @@ def main():
     deploy_model.eval()
 
     fake_input = torch.randn(args.batch_size, input_channels,
-                             *args.img_size).to(args.device)
+                             *input_img_size).to(args.device)
     # dry run
     fake_outputs = deploy_model(fake_input)
 
@@ -264,9 +270,19 @@ def main():
         xonnx.prune_layer_names(save_onnx_path, save_onnx_path, opset_version=args.opset)
 
     onnx_model = onnx.load(save_onnx_path)
+    if deploy_cfg.get('preprocess'):
+        preprocess = dict(deploy_cfg['preprocess'], source_size=args.img_size)
+        properties = {p.key: p.value for p in onnx_model.metadata_props}
+        properties['preprocess'] = json.dumps(preprocess)
+        onnx.helper.set_model_props(onnx_model, properties)
+        onnx.save(onnx_model, save_onnx_path)
+    # Detection coordinates still refer to the image before external Focus.
+    proto_input = (fake_input if input_divisor == 1 else
+                   (args.batch_size, input_channels // input_divisor ** 2,
+                    *args.img_size))
     save_prototxt_path = save_model_proto(baseModel,
                      onnx_model,
-                     fake_input,
+                     proto_input,
                      save_onnx_path,
                      output_names=output_names,
                      export_type=args.export_type)

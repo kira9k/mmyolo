@@ -45,6 +45,7 @@ class TestYOLOv8Head(TestCase):
                 torch.rand(1, in_channel, s // feat_size, s // feat_size))
 
         cls_scores, bbox_preds = head.forward(feat)
+        raw_bbox_preds = [pred.clone() for pred in bbox_preds]
         head.predict_by_feat(
             cls_scores,
             bbox_preds,
@@ -53,6 +54,8 @@ class TestYOLOv8Head(TestCase):
             cfg=test_cfg,
             rescale=True,
             with_nms=True)
+        for actual, expected in zip(bbox_preds, raw_bbox_preds):
+            torch.testing.assert_close(actual, expected)
         head.predict_by_feat(
             cls_scores,
             bbox_preds,
@@ -61,6 +64,8 @@ class TestYOLOv8Head(TestCase):
             cfg=test_cfg,
             rescale=False,
             with_nms=False)
+        for actual, expected in zip(bbox_preds, raw_bbox_preds):
+            torch.testing.assert_close(actual, expected)
 
     def test_loss_by_feat(self):
         s = 256
