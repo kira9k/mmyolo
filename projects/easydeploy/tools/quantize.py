@@ -1,5 +1,6 @@
 import os
 import sys
+import torch.nn as nn
 from tabnanny import check
 import warnings
 from io import BytesIO
@@ -37,6 +38,14 @@ warnings.filterwarnings(action='ignore', category=UserWarning)
 warnings.filterwarnings(action='ignore', category=FutureWarning)
 warnings.filterwarnings(action='ignore', category=ResourceWarning)
 
+
+
+class CustomTransform:
+    def __init__(self, upscale_factor=4):
+        self.upscale_factor = upscale_factor
+
+    def transform(self, img):
+        return nn.PixelUnshuffle(downscale_factor=self.upscale_factor)(img.unsqueeze(0)).squeeze(0)
 
 class UnnormalizeToTensor:
     def __call__(self, tensor):
@@ -166,8 +175,8 @@ def duplicate_yolov8_cls_convs(
         )
 
 def main():
-    checkpoint = "/mmyolo/work_dirs/yolov8_n_big_dataset/best_coco_bbox_mAP_epoch_499.pth"
-    config = "/mmyolo/configs/yolov8/yolov8_n_syncbn_fast_8xb16-500e_coco.py"
+    checkpoint = "/mmyolo/work_dirs/yolov8_s_focus_add_surgery2/best_coco_bbox_mAP_epoch_10.pth"
+    config = "/mmyolo/configs/yolov8/yolov8_s_focus_add_surgery2.py"
     #config = "/mmyolo/configs/yolov8/yolov8_s_syncbn_fast_8xb16-500e_coco.py"
     #checkpoint = "/mmyolo/work_dirs/yolov8_21_02_2025_multi_label_false_back_norm_people/best_coco_bbox_mAP_epoch_140.pth"
     device = "cpu"
@@ -190,10 +199,10 @@ def main():
     load_checkpoint(baseModel, checkpoint, map_location='cpu')
 
     ###для дублирования весов
-    duplicate_yolov8_cls_convs(
-        baseModel,
-        output_channels=16
-    )
+    # duplicate_yolov8_cls_convs(
+    #     baseModel,
+    #     output_channels=16
+    # )
     #####
     
     deploy_model = DeployModel(
@@ -202,21 +211,23 @@ def main():
 
 
     with torch.no_grad():
-        input = torch.rand(1,3,640,640)
+        input = torch.rand(1,16,160,160)
         deploy_model(input)
 
     transform = transforms.Compose([
         transforms.Resize(640),
         transforms.CenterCrop(640),
         transforms.ToTensor(),
-        UnnormalizeToTensor()
+        #UnnormalizeToTensor(),
+        transforms.Grayscale(num_output_channels=1),
+        CustomTransform(upscale_factor=4).transform
     ])
 
     for name, module in deploy_model.named_modules():
         if isinstance(module, torch.nn.Conv2d):
             print(name, module)
 
-    input = torch.rand(1, 3, 640, 640).to(torch.device("cpu"))
+    input = torch.rand(1, 16, 160, 160).to(torch.device("cpu"))
     exported_model = torch.export.export(deploy_model, (input,)).module()
     quantizer = XNNPACKQuantizer()
     
@@ -226,9 +237,9 @@ def main():
     
     ##Убираем слои из квантования
     
-    quantizer.set_module_name("baseModel.bbox_head.head_module.cls_preds.2.2", no_quant_config)
-    quantizer.set_module_name("baseModel.bbox_head.head_module.cls_preds.1.2", no_quant_config)
-    quantizer.set_module_name("baseModel.bbox_head.head_module.cls_preds.0.2", no_quant_config)
+    #quantizer.set_module_name("baseModel.bbox_head.head_module.cls_preds.2.2", no_quant_config)
+    #quantizer.set_module_name("baseModel.bbox_head.head_module.cls_preds.1.2", no_quant_config)
+    #quantizer.set_module_name("baseModel.bbox_head.head_module.cls_preds.0.2", no_quant_config)
         
     # quantizer.set_module_name("baseModel.bbox_head.head_module.cls_preds.2.1.conv", no_quant_config)
     # quantizer.set_module_name("baseModel.bbox_head.head_module.cls_preds.1.1.conv", no_quant_config)
@@ -246,7 +257,8 @@ def main():
         #root_dir="/mmyolo/data/test_data/Sasha/images",  
         transform=transform
     )
-
+    print(calib_dataset[0])
+    
     calib_loader = DataLoader(calib_dataset, batch_size=32, shuffle=False, num_workers=20, drop_last=True)
 
     with torch.no_grad():
@@ -260,13 +272,13 @@ def main():
     quantized_model.to(torch.device("cpu"))
     
     scripted = torch.jit.trace(quantized_model, input)
-    scripted.save("/mmyolo/weights/full_quant_no_slice/yolov8_n_int8_ptq_no_slice.jit.pt")
+    scripted.save("/mmyolo/work_dirs/yolov8_s_focus_add_surgery2/pt/epoch_10.jit.pt")
 
     quantized_model.to(device)
     ref = quantized_model(input)
 
     quantized_ep = torch.export.export(quantized_model.to(torch.device("cpu")), (input.to(torch.device("cpu")),))
-    torch.export.save(quantized_ep, "/mmyolo/weights/full_quant_no_slice/yolov8_n_int8_ptq_no_slice.pt2")
+    torch.export.save(quantized_ep, "/mmyolo/work_dirs/yolov8_s_focus_add_surgery2/pt/epoch_10.pt2")
 
 
 

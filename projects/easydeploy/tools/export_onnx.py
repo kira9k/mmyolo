@@ -46,6 +46,12 @@ def parse_args():
     parser.add_argument(
         '--model-only', action='store_true', help='Export model only')
     parser.add_argument(
+        '--raw-output-format',
+        choices=('separate', 'combined'),
+        default=None,
+        help='YOLOv8 model-only outputs: separate cls/DFL branches or combined '
+             'per-scale tensors. Omit to use deploy_cfg.')
+    parser.add_argument(
         '--work-dir', default='./work_dir', help='Path to save export model')
     parser.add_argument(
         '--img-size',
@@ -139,6 +145,14 @@ def main():
         args.model_only = True
         print_log(f'Can not export postprocess for {args.backend.lower()}.\n'
                   f'Set "args.model_only=True" default.')
+    requested_output_format = getattr(args, 'raw_output_format', None)
+    if requested_output_format is not None:
+        if not args.model_only:
+            raise ValueError('--raw-output-format requires --model-only')
+        if backend in (MMYOLOBackend.HORIZONX3, MMYOLOBackend.NCNN,
+                       MMYOLOBackend.TORCHSCRIPT):
+            raise ValueError('--raw-output-format does not support transposed '
+                             'outputs for this backend; use onnxruntime')
     if args.model_only:
         postprocess_cfg = None
         output_names = None
@@ -163,7 +177,11 @@ def main():
     baseModel = build_model_from_cfg(args.config, args.checkpoint, args.device)
     input_channels = baseModel.backbone.input_channels
     deploy_cfg = baseModel.cfg.get('deploy_cfg', {})
-    raw_output_format = deploy_cfg.get('raw_output_format', 'separate')
+    configured_output_format = deploy_cfg.get('raw_output_format', 'separate')
+    raw_output_format = requested_output_format or configured_output_format
+    if (requested_output_format is not None and not isinstance(
+            baseModel.bbox_head.head_module, YOLOv8HeadModule)):
+        raise ValueError('--raw-output-format is supported only for YOLOv8')
     input_divisor = deploy_cfg.get('input_spatial_divisor', 1)
     if (not isinstance(input_divisor, int) or input_divisor < 1
             or any(size % input_divisor for size in args.img_size)):
@@ -171,6 +189,18 @@ def main():
     input_img_size = [size // input_divisor for size in args.img_size]
     if args.model_only:
         output_names = deploy_cfg.get('output_names')
+        if requested_output_format == 'separate':
+            output_names = [
+                f'{branch}_s{stride}'
+                for stride in baseModel.bbox_head.featmap_strides
+                for branch in ('cls', 'bbox')
+            ]
+        elif (requested_output_format == 'combined'
+              and configured_output_format != 'combined'):
+            output_names = [
+                f'head_s{stride}'
+                for stride in baseModel.bbox_head.featmap_strides
+            ]
 
     if args.export_type is None and not args.model_only:
         is_yolov5_or_yolov7 = isinstance(baseModel.bbox_head.head_module, (YOLOv5HeadModule, YOLOv7HeadModule, YOLOv8HeadModule))

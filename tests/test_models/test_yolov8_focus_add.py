@@ -13,6 +13,7 @@ import torch.nn.functional as F
 from mmdet.structures import DetDataSample
 from mmengine.config import Config
 
+from mmyolo.models.layers import CSPLayerWithTwoConv, SPPFBottleneck
 from mmyolo.registry import MODELS
 from mmyolo.utils import register_all_modules
 
@@ -26,12 +27,40 @@ class TestYOLOv8FocusAdd(TestCase):
     config_path = CONFIG
     widen_factor = 0.25
     stem_channels = 32
+    spp_fusion_mode = 'add'
 
     def build_model(self):
         cfg = Config.fromfile(self.config_path)
         model = MODELS.build(cfg.model)
         model.cfg = cfg
         return cfg, model
+
+    def assert_concat_layout(self, graph, output_names=()):
+        concats = [
+            node for node in graph.graph.node if node.op_type == 'Concat'
+        ]
+        terminal = [node for node in concats if node.output[0] in output_names]
+        internal = [
+            node for node in concats if node.output[0] not in output_names
+        ]
+        self.assertEqual({node.output[0]
+                          for node in terminal}, set(output_names))
+        self.assertEqual(len(internal), int(self.spp_fusion_mode == 'concat'))
+        if internal:
+            pool_concat = internal[0]
+            self.assertEqual(len(pool_concat.input), 4)
+            self.assertEqual(len(set(pool_concat.input)), 4)
+            self.assertEqual(
+                next(a.i for a in pool_concat.attribute if a.name == 'axis'),
+                1)
+            producers = {
+                value: node
+                for node in graph.graph.node
+                for value in node.output
+            }
+            self.assertEqual(
+                [producers[value].op_type for value in pool_concat.input],
+                ['Relu', 'MaxPool', 'MaxPool', 'MaxPool'])
 
     def test_topology_and_config(self):
         cfg, model = self.build_model()
@@ -46,6 +75,19 @@ class TestYOLOv8FocusAdd(TestCase):
         self.assertEqual(cfg.model.neck.widen_factor, self.widen_factor)
         self.assertEqual(cfg.model.bbox_head.head_module.widen_factor,
                          self.widen_factor)
+        spp_layers = [
+            layer for layer in model.backbone.modules()
+            if isinstance(layer, SPPFBottleneck)
+        ]
+        self.assertEqual(len(spp_layers), 1)
+        spp = spp_layers[0]
+        self.assertEqual(spp.fusion_mode, self.spp_fusion_mode)
+        factor = 4 if self.spp_fusion_mode == 'concat' else 1
+        self.assertEqual(spp.conv2.conv.in_channels,
+                         factor * spp.conv1.conv.out_channels)
+        for layer in (*model.backbone.modules(), *model.neck.modules()):
+            if isinstance(layer, CSPLayerWithTwoConv):
+                self.assertEqual(layer.fusion_mode, 'add')
         self.assertIsNone(cfg.load_from)
         self.assertFalse(cfg.resume)
         for part in (model.backbone, model.neck, model.bbox_head.head_module):
@@ -233,12 +275,7 @@ class TestYOLOv8FocusAdd(TestCase):
             self.assertTrue({'Relu', 'Add'} <= operators)
             self.assertFalse(operators
                              & {'HardSigmoid', 'HardSwish', 'SpaceToDepth'})
-            concat = [
-                node for node in graph.graph.node if node.op_type == 'Concat'
-            ]
-            self.assertEqual({node.output[0]
-                              for node in concat},
-                             set(cfg.deploy_cfg.output_names))
+            self.assert_concat_layout(graph, cfg.deploy_cfg.output_names)
             metadata = json.loads(
                 dict((p.key, p.value)
                      for p in graph.metadata_props)['preprocess'])
@@ -247,6 +284,15 @@ class TestYOLOv8FocusAdd(TestCase):
             proto = text_format.Parse(
                 path.with_suffix('.prototxt').read_text(),
                 mmyolo_meta_arch_pb2.TIDLMetaArch())
+            head_inputs = [
+                producers[name].input for name in cfg.deploy_cfg.output_names
+            ]
+            self.assertEqual(
+                list(proto.caffe_ssd[0].class_input),
+                [inputs[0] for inputs in head_inputs])
+            self.assertEqual(
+                list(proto.caffe_ssd[0].box_input),
+                [inputs[1] for inputs in head_inputs])
             self.assertEqual(
                 (proto.caffe_ssd[0].in_height, proto.caffe_ssd[0].in_width),
                 (64, 96))
@@ -259,6 +305,109 @@ class TestYOLOv8FocusAdd(TestCase):
                     torch.from_numpy(expected_head),
                     atol=5e-4,
                     rtol=1e-4)
+
+    @skipUnless(
+        importlib.util.find_spec('edgeai_torchmodelopt'),
+        'edgeai_torchmodelopt is not installed')
+    @skipUnless(importlib.util.find_spec('onnx'), 'onnx is not installed')
+    @skipUnless(
+        importlib.util.find_spec('onnxruntime'),
+        'onnxruntime is not installed')
+    def test_separate_onnx_export_matches_combined(self):
+        import onnx
+        import onnxruntime as ort
+        from google.protobuf import text_format
+        from mmyolo.utils.proto import mmyolo_meta_arch_pb2
+        from projects.easydeploy.model import DeployModel, MMYOLOBackend
+        from projects.easydeploy.tools import export_onnx
+
+        _, model = self.build_model()
+        model.eval()
+        x = torch.rand(1, 16, 16, 24)
+        deploy = DeployModel(
+            model, MMYOLOBackend.ONNXRUNTIME,
+            raw_output_format='combined').eval()
+        with torch.no_grad():
+            merged = deploy(x)
+        expected = [
+            branch for head in merged for branch in (head[:, :1], head[:, 1:])
+        ]
+        names = [
+            'cls_s8', 'bbox_s8', 'cls_s16', 'bbox_s16', 'cls_s32', 'bbox_s32'
+        ]
+        with tempfile.TemporaryDirectory() as directory:
+            args = self.export_args(directory)
+            args.raw_output_format = 'separate'
+            torch.save(dict(state_dict=model.state_dict()), args.checkpoint)
+            with patch.object(export_onnx, 'parse_args', return_value=args), \
+                    patch.object(export_onnx, 'build_model_from_cfg',
+                                 return_value=model):
+                export_onnx.main()
+            path = Path(directory) / 'epoch_1.onnx'
+            graph = onnx.load(path)
+            onnx.checker.check_model(graph)
+            self.assertEqual([output.name for output in graph.graph.output],
+                             names)
+            self.assertEqual(
+                [[d.dim_value for d in output.type.tensor_type.shape.dim]
+                 for output in graph.graph.output],
+                [list(head.shape) for head in expected])
+            self.assert_concat_layout(graph)
+            self.assertFalse(
+                any(node.op_type == 'Sigmoid' for node in graph.graph.node))
+            proto = text_format.Parse(
+                path.with_suffix('.prototxt').read_text(),
+                mmyolo_meta_arch_pb2.TIDLMetaArch())
+            self.assertEqual(list(proto.caffe_ssd[0].class_input), names[::2])
+            self.assertEqual(list(proto.caffe_ssd[0].box_input), names[1::2])
+            self.assertEqual(
+                (proto.caffe_ssd[0].in_height, proto.caffe_ssd[0].in_width),
+                (64, 96))
+            metadata = json.loads(
+                dict((p.key, p.value)
+                     for p in graph.metadata_props)['preprocess'])
+            self.assertEqual(metadata['source_size'], [64, 96])
+            session = ort.InferenceSession(
+                str(path), providers=['CPUExecutionProvider'])
+            actual = session.run(None, {'images': x.numpy()})
+            for actual_head, expected_head in zip(actual, expected):
+                torch.testing.assert_close(
+                    torch.from_numpy(actual_head),
+                    expected_head,
+                    atol=5e-4,
+                    rtol=1e-4)
+
+    @skipUnless(
+        importlib.util.find_spec('edgeai_torchmodelopt'),
+        'edgeai_torchmodelopt is not installed')
+    @skipUnless(importlib.util.find_spec('onnx'), 'onnx is not installed')
+    def test_explicit_combined_overrides_separate_config_names(self):
+        import onnx
+        from projects.easydeploy.tools import export_onnx
+
+        cfg, model = self.build_model()
+        cfg.deploy_cfg.raw_output_format = 'separate'
+        cfg.deploy_cfg.output_names = [
+            'cls_s8', 'bbox_s8', 'cls_s16', 'bbox_s16', 'cls_s32', 'bbox_s32'
+        ]
+        model.eval()
+        with tempfile.TemporaryDirectory() as directory:
+            args = self.export_args(directory)
+            args.raw_output_format = 'combined'
+            torch.save(dict(state_dict=model.state_dict()), args.checkpoint)
+            with patch.object(export_onnx, 'parse_args', return_value=args), \
+                    patch.object(export_onnx, 'build_model_from_cfg',
+                                 return_value=model):
+                export_onnx.main()
+            graph = onnx.load(str(Path(directory) / 'epoch_1.onnx'))
+            onnx.checker.check_model(graph)
+        self.assertEqual([output.name for output in graph.graph.output],
+                         ['head_s8', 'head_s16', 'head_s32'])
+        self.assertEqual(
+            [[d.dim_value for d in output.type.tensor_type.shape.dim]
+             for output in graph.graph.output],
+            [[1, 65, 8, 12], [1, 65, 4, 6], [1, 65, 2, 3]])
+        self.assert_concat_layout(graph, ['head_s8', 'head_s16', 'head_s32'])
 
     @skipUnless(
         importlib.util.find_spec('edgeai_torchmodelopt'),
@@ -304,3 +453,15 @@ class TestYOLOv8SFocusAdd(TestYOLOv8FocusAdd):
     config_path = ROOT / 'configs/yolov8/yolov8_s_focus_add_surgery2.py'
     widen_factor = 0.5
     stem_channels = 64
+
+
+class TestYOLOv8NFocusSPPConcat(TestYOLOv8FocusAdd):
+
+    config_path = ROOT / 'configs/yolov8/yolov8_n_focus_add_spp_concat_surgery2.py'
+    spp_fusion_mode = 'concat'
+
+
+class TestYOLOv8SFocusSPPConcat(TestYOLOv8SFocusAdd):
+
+    config_path = ROOT / 'configs/yolov8/yolov8_s_focus_add_spp_concat_surgery2.py'
+    spp_fusion_mode = 'concat'

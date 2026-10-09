@@ -17,6 +17,8 @@
 | `configs/yolov8/yolov8_s_add_surgery2_fine_tune.py` | Add | Add | Add |
 | `configs/yolov8/yolov8_n_focus_add_surgery2.py` | Add | Add | Add |
 | `configs/yolov8/yolov8_s_focus_add_surgery2.py` | Add | Add | Add |
+| `configs/yolov8/yolov8_n_focus_add_spp_concat_surgery2.py` | Add | Add | Concat |
+| `configs/yolov8/yolov8_s_focus_add_spp_concat_surgery2.py` | Add | Add | Concat |
 
 Первые две конфигурации наследуют существующий конфиг обучения YOLOv8-s,
 включая настройки локального датасета. Вариант дообучения использует обучающую
@@ -148,6 +150,55 @@ python projects/easydeploy/tools/export_pt.py "$CONFIG" "$CHECKPOINT" \
 При экспорте без `--model-surgery` PT-экспортёр сохраняет Python-модель
 через `torch.save`, это другой формат загрузки.
 
+### Раздельные выходы ONNX без конечных Concat
+
+Для YOLOv8 можно переопределить формат выходов только при ONNX-экспорте,
+не меняя конфиг или обученные веса:
+`--model-only --raw-output-format separate`.
+Флаг работает как с RGB/Add/ReLU, так и с Focus4-вариантами n/s.
+Для модели с одним классом и входным изображением 640x640 порядок
+и формы шести выходов будут такими:
+
+| Порядок | Имя | Форма NCHW |
+| --- | --- | --- |
+| 0 | `cls_s8` | `(1,1,80,80)` |
+| 1 | `bbox_s8` | `(1,64,80,80)` |
+| 2 | `cls_s16` | `(1,1,40,40)` |
+| 3 | `bbox_s16` | `(1,64,40,40)` |
+| 4 | `cls_s32` | `(1,1,20,20)` |
+| 5 | `bbox_s32` | `(1,64,20,20)` |
+
+В RGB/ReLU и Focus4/ReLU выходы cls содержат исходные логиты:
+sigmoid выполняется снаружи. Выходы bbox содержат 64 логита DFL,
+а не уже декодированные четыре координаты. В grayscale/hard-конфигурациях
+сохраняется предусмотренный ими hard sigmoid; этот флаг меняет только
+объединение ветвей, а не активации или точность вычислений.
+
+```bash
+CONFIG=configs/yolov8/yolov8_s_focus_add_surgery2.py
+CHECKPOINT=$(cat work_dirs/yolov8_s_focus_add_surgery2/last_checkpoint)
+
+python projects/easydeploy/tools/export_onnx.py "$CONFIG" "$CHECKPOINT" \
+  --model-only --raw-output-format separate --model-surgery 2 \
+  --img-size 640 640 --opset 11 --device cpu \
+  --work-dir work_dirs/yolov8_s_focus_add_surgery2/onnx_separate
+```
+
+Используйте отдельный каталог `onnx_separate`, чтобы не перезаписать
+трёхвыходную модель с тем же именем checkpoint.
+Без флага сохраняется формат из `deploy_cfg`: в конфигурациях surgery2
+и Focus4 это три объединённых выхода с именами `583`, `584`, `585`.
+Флаг `--raw-output-format combined` явно выбирает объединение ветвей.
+Настройка не меняет PT-экспорт и не требует повторного обучения.
+
+При раздельном экспорте три конечных Concat отсутствуют; для Add-архитектуры
+без других конкатенаций граф не содержит Concat вообще.
+У обычной архитектуры YOLOv8 внутренние Concat сохраняются.
+Prototxt получает отдельные имена cls/bbox для каждого масштаба.
+Флаг предназначен для экспорта без декодера/NMS в формате NCHW,
+например с `--backend onnxruntime`. Режимы backend с транспонированными
+выходами (NCNN, HorizonX3, TorchScript) отклоняются явно.
+
 ## YOLOv8n/s с внешним Focus4
 
 `yolov8_n_focus_add_surgery2.py` задаёт новую nano-архитектуру для
@@ -237,6 +288,50 @@ packed[n, 4 * r + c, y, x] = gray[n, 0, 4 * y + r, 4 * x + c]
 surgery 2 и экспорт обоих вариантов проверяются в `test_yolov8_focus_add.py`.
 Сохранение точности требует полноценного обучения и оценки на датасете;
 проверочный шаг обучения и численное сравнение экспортов не заменяют mAP.
+
+### Concat после пулингов SPPF
+
+Отдельные конфигурации `yolov8_n_focus_add_spp_concat_surgery2.py` и
+`yolov8_s_focus_add_spp_concat_surgery2.py` меняют только объединение
+ветвей SPPF: вместо цепочки сложений используется один Concat по каналам.
+Объединяются четыре ветви: исходный тензор и результаты трёх последовательных
+MaxPool. C2f, объединения масштабов в neck, внешний Focus4 и ReLU не меняются.
+Вход по-прежнему `(1,16,160,160)`; первая свёртка имеет 32 выходных
+канала у n и 64 у s.
+
+Concat увеличивает число входных каналов финальной свёртки SPPF в четыре
+раза: до 512 у n и 1024 у s. Поэтому старый checkpoint с Add в SPPF
+нельзя напрямую загрузить в эту архитектуру без изменения весов.
+Обучайте варианты отдельно; конфиги сохраняют `load_from=None`
+и `resume=False`.
+
+```bash
+python tools/train.py configs/yolov8/yolov8_n_focus_add_spp_concat_surgery2.py \
+  --model-surgery 2 --work-dir work_dirs/yolov8_n_focus_add_spp_concat_surgery2
+
+python tools/train.py configs/yolov8/yolov8_s_focus_add_spp_concat_surgery2.py \
+  --model-surgery 2 --work-dir work_dirs/yolov8_s_focus_add_spp_concat_surgery2
+```
+
+Пример раздельного ONNX-экспорта для s после обучения:
+
+```bash
+CONFIG=configs/yolov8/yolov8_s_focus_add_spp_concat_surgery2.py
+CHECKPOINT=$(cat work_dirs/yolov8_s_focus_add_spp_concat_surgery2/last_checkpoint)
+
+python projects/easydeploy/tools/export_onnx.py "$CONFIG" "$CHECKPOINT" \
+  --model-only --model-surgery 2 --raw-output-format separate \
+  --img-size 640 640 --opset 11 --device cpu \
+  --work-dir work_dirs/yolov8_s_focus_add_spp_concat_surgery2/onnx_separate
+```
+
+Без `--raw-output-format separate` сохраняются три объединённых выхода
+с прежним порядком каналов. В ONNX этих вариантов четыре Concat
+при объединённых выходах: один в SPPF и три для cls/bbox.
+При раздельных выходах остаётся **один внутренний Concat в SPPF**.
+Флаг экспорта убирает только конечные объединения cls/bbox, не Concat
+после пулингов. Общие тесты проверяют все четыре конфигурации n/s
+с Add или Concat в SPPF, включая обучение, ONNX, prototxt и TorchScript.
 
 ## Одноканальный вход и hard sigmoid
 
