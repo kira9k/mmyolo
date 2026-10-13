@@ -27,6 +27,8 @@ class YOLODetector(SingleStageDetector):
             list[dict], optional): Initialization config dict.
             Defaults to None.
         use_syncbn (bool): whether to use SyncBatchNorm. Defaults to True.
+        pruning_structure (dict, optional): Physical channel sizes saved by
+            the structural pruning tool. Defaults to None.
     """
 
     def __init__(self,
@@ -37,7 +39,8 @@ class YOLODetector(SingleStageDetector):
                  test_cfg: OptConfigType = None,
                  data_preprocessor: OptConfigType = None,
                  init_cfg: OptMultiConfig = None,
-                 use_syncbn: bool = True):
+                 use_syncbn: bool = True,
+                 pruning_structure: OptConfigType = None):
         super().__init__(
             backbone=backbone,
             neck=neck,
@@ -46,6 +49,10 @@ class YOLODetector(SingleStageDetector):
             test_cfg=test_cfg,
             data_preprocessor=data_preprocessor,
             init_cfg=init_cfg)
+
+        if pruning_structure is not None:
+            from mmyolo.utils.structural_pruning import restore_structure
+            restore_structure(self, pruning_structure)
 
         # TODO： Waiting for mmengine support
         if use_syncbn and get_world_size() > 1:
