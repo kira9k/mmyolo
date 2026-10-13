@@ -1,3 +1,4 @@
+import argparse
 import os
 import sys
 import torch.nn as nn
@@ -9,7 +10,6 @@ from tqdm import tqdm
 from PIL import Image
 from torch.utils.data import DataLoader, Dataset
 from torchvision import transforms, datasets
-from torchao.quantization.pt2e.quantize_pt2e import prepare_pt2e, convert_pt2e   # 0.12.0
 #from executorch.backends.xnnpack.quantizer.xnnpack_quantizer import get_symmetric_quantization_config, XNNPACKQuantizer
 from torch.ao.quantization.quantizer.xnnpack_quantizer import XNNPACKQuantizer, get_symmetric_quantization_config, QuantizationConfig
 from torch.ao.quantization.qconfig import QConfig
@@ -143,19 +143,13 @@ def duplicate_yolov8_cls_convs(
             padding_mode=old_conv.padding_mode,
         )
 
-        # Переносим новую свёртку на то же устройство
-        # и в тот же dtype, что и исходная.
+
         new_conv = new_conv.to(
             device=old_conv.weight.device,
             dtype=old_conv.weight.dtype,
         )
 
         with torch.no_grad():
-            # Было:
-            # [1, C, 1, 1]
-            #
-            # Станет:
-            # [16, C, 1, 1]
             new_conv.weight.copy_(
                 old_conv.weight.repeat(output_channels, 1, 1, 1)
             )
@@ -174,16 +168,72 @@ def duplicate_yolov8_cls_convs(
             f'bias={None if new_conv.bias is None else tuple(new_conv.bias.shape)}'
         )
 
+
+def parse_args():
+    parser = argparse.ArgumentParser(description='Quantize a Focus4 YOLOv8 model')
+    parser.add_argument(
+        '--config',
+        default='/mmyolo/configs/yolov8/yolov8_s_focus_add_spp_concat_surgery2.py')
+    parser.add_argument(
+        '--checkpoint',
+        default='/mmyolo/work_dirs/yolov8_s_focus_add_spp_concat_surgery2/'
+        'best_coco_bbox_mAP_epoch_10.pth')
+    parser.add_argument(
+        '--raw-output-format',
+        choices=('combined', 'separate'),
+        default='combined',
+        help='Combine cls/bbox per scale (default) or return separate branches')
+    parser.add_argument(
+        '--duplicate-cls-channels',
+        type=int,
+        default=1,
+        help='Keep trained cls channels (1, default), or copy a single class '
+        'into this many channels (e.g. 16)')
+    parser.add_argument('--calib-dir', default='/mmyolo/data/v3/val/images')
+    parser.add_argument(
+        '--work-dir',
+        help='Output directory (default: checkpoint directory/pt)')
+    args = parser.parse_args()
+    if args.duplicate_cls_channels < 1:
+        parser.error('--duplicate-cls-channels must be positive')
+    return args
+
+
+def build_quantization_deploy_model(model,
+                                   raw_output_format='combined',
+                                   duplicate_cls_channels=1):
+    if duplicate_cls_channels < 1:
+        raise ValueError('duplicate_cls_channels must be positive')
+    if raw_output_format not in ('combined', 'separate'):
+        raise ValueError('raw_output_format must be combined or separate')
+    if duplicate_cls_channels != 1:
+        head_module = model.bbox_head.head_module
+        if not isinstance(head_module, YOLOv8HeadModule):
+            raise ValueError('Class duplication is supported only for YOLOv8')
+        # Validate all scales before changing any trained weights.
+        for branch in head_module.cls_preds:
+            if (not isinstance(branch[-1], nn.Conv2d)
+                    or branch[-1].out_channels != 1):
+                raise ValueError(
+                    'Class duplication requires single-class cls Conv2d layers')
+        duplicate_yolov8_cls_convs(model, output_channels=duplicate_cls_channels)
+    return DeployModel(
+        baseModel=model,
+        backend=MMYOLOBackend.ONNXRUNTIME,
+        postprocess_cfg=None,
+        raw_output_format=raw_output_format)
+
+
 def main():
-    checkpoint = "/mmyolo/work_dirs/yolov8_s_focus_add_surgery2/best_coco_bbox_mAP_epoch_10.pth"
-    config = "/mmyolo/configs/yolov8/yolov8_s_focus_add_surgery2.py"
+    args = parse_args()
+    # Keep CLI help and output-layout tests independent of optional torchao.
+    from torchao.quantization.pt2e.quantize_pt2e import prepare_pt2e, convert_pt2e #0.12.0
+
+    checkpoint = args.checkpoint
+    config = args.config
     #config = "/mmyolo/configs/yolov8/yolov8_s_syncbn_fast_8xb16-500e_coco.py"
     #checkpoint = "/mmyolo/work_dirs/yolov8_21_02_2025_multi_label_false_back_norm_people/best_coco_bbox_mAP_epoch_140.pth"
     device = "cpu"
-    backend = MMYOLOBackend(MMYOLOBackend.ONNXRUNTIME)
-    model_only = True
-    postprocess_cfg = None
-    outupt_names = None
 
     baseModel = build_model_from_cfg(config, checkpoint, device)
 
@@ -198,16 +248,19 @@ def main():
 
     load_checkpoint(baseModel, checkpoint, map_location='cpu')
 
-    ###для дублирования весов
-    # duplicate_yolov8_cls_convs(
-    #     baseModel,
-    #     output_channels=16
-    # )
-    #####
-    
-    deploy_model = DeployModel(
-        baseModel=baseModel, backend=backend, postprocess_cfg=postprocess_cfg)
+    deploy_model = build_quantization_deploy_model(
+        baseModel,
+        raw_output_format=args.raw_output_format,
+        duplicate_cls_channels=args.duplicate_cls_channels)
     deploy_model.eval()
+
+    output_dir = (Path(args.work_dir) if args.work_dir else
+                  Path(checkpoint).parent / 'pt')
+    output_dir.mkdir(parents=True, exist_ok=True)
+    suffix = f'_int8_{args.raw_output_format}'
+    if args.duplicate_cls_channels != 1:
+        suffix += f'_cls{args.duplicate_cls_channels}'
+    output_stem = Path(checkpoint).stem + suffix
 
 
     with torch.no_grad():
@@ -253,7 +306,7 @@ def main():
     prepared_model.to(device)
 
     calib_dataset = CustomImageDataset(
-        root_dir="/mmyolo/data/v3/val/images",
+        root_dir=args.calib_dir,
         #root_dir="/mmyolo/data/test_data/Sasha/images",  
         transform=transform
     )
@@ -272,13 +325,14 @@ def main():
     quantized_model.to(torch.device("cpu"))
     
     scripted = torch.jit.trace(quantized_model, input)
-    scripted.save("/mmyolo/work_dirs/yolov8_s_focus_add_surgery2/pt/epoch_10.jit.pt")
+    scripted.save(str(output_dir / (output_stem + '.jit.pt')))
 
     quantized_model.to(device)
     ref = quantized_model(input)
 
     quantized_ep = torch.export.export(quantized_model.to(torch.device("cpu")), (input.to(torch.device("cpu")),))
-    torch.export.save(quantized_ep, "/mmyolo/work_dirs/yolov8_s_focus_add_surgery2/pt/epoch_10.pt2")
+    torch.export.save(quantized_ep, str(output_dir / (output_stem + '.pt2')))
+    print(f'Saved quantized models: {output_dir / output_stem}.jit.pt and .pt2')
 
 
 
