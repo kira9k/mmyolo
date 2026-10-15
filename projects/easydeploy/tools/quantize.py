@@ -155,7 +155,6 @@ def duplicate_yolov8_cls_convs(
             )
 
             if old_conv.bias is not None:
-                # Было [1], станет [16].
                 new_conv.bias.copy_(
                     old_conv.bias.repeat(output_channels)
                 )

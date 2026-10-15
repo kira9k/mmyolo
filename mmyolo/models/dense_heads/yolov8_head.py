@@ -1,6 +1,6 @@
 # Copyright (c) OpenMMLab. All rights reserved.
 import math
-from typing import List, Sequence, Tuple, Union
+from typing import List, Optional, Sequence, Tuple, Union
 
 import torch
 import torch.nn as nn
@@ -42,6 +42,10 @@ class YOLOv8HeadModule(BaseModule):
         init_cfg (:obj:`ConfigDict` or list[:obj:`ConfigDict`] or dict or
             list[dict], optional): Initialization config dict.
             Defaults to None.
+        cls_out_channels (int, optional): Hidden width of every classification
+            branch, after width scaling. This value is not multiplied by
+            widen_factor. Defaults to None, which preserves the original
+            max(in_channels[0], num_classes) rule.
     """
 
     def __init__(self,
@@ -54,8 +58,13 @@ class YOLOv8HeadModule(BaseModule):
                  norm_cfg: ConfigType = dict(
                      type='BN', momentum=0.03, eps=0.001),
                  act_cfg: ConfigType = dict(type='SiLU', inplace=True),
-                 init_cfg: OptMultiConfig = None):
+                 init_cfg: OptMultiConfig = None,
+                 cls_out_channels: Optional[int] = None):
         super().__init__(init_cfg=init_cfg)
+        if cls_out_channels is not None and (
+                type(cls_out_channels) is not int or cls_out_channels <= 0):
+            raise ValueError(
+                'cls_out_channels must be a positive integer or None')
         self.num_classes = num_classes
         self.featmap_strides = featmap_strides
         self.num_levels = len(self.featmap_strides)
@@ -71,6 +80,9 @@ class YOLOv8HeadModule(BaseModule):
             in_channels.append(channel)
         self.in_channels = in_channels
 
+        self.cls_out_channels = (
+            max(self.in_channels[0], self.num_classes)
+            if cls_out_channels is None else cls_out_channels)
         self._init_layers()
 
     def init_weights(self, prior_prob=0.01):
@@ -91,7 +103,7 @@ class YOLOv8HeadModule(BaseModule):
 
         reg_out_channels = max(
             (16, self.in_channels[0] // 4, self.reg_max * 4))
-        cls_out_channels = max(self.in_channels[0], self.num_classes)
+        cls_out_channels = self.cls_out_channels
 
         for i in range(self.num_levels):
             self.reg_preds.append(
