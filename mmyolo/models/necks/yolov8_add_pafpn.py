@@ -29,7 +29,7 @@ class YOLOv8AddPAFPN(YOLOv8PAFPN):
         norm_cfg (dict): Normalization configuration.
         act_cfg (dict): Activation configuration.
         init_cfg (dict, optional): Initialization configuration.
-        csp_fusion_mode (str): Internal C2f fusion, 'concat' or 'add'.
+        csp_fusion_mode (str): Internal C2f fusion, 'concat', 'add' or 'add_last'.
             Defaults to 'add'.
     """
 

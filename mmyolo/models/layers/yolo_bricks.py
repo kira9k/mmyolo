@@ -1478,7 +1478,9 @@ class CSPLayerWithTwoConv(BaseModule):
         init_cfg (:obj:`ConfigDict` or dict or list[dict] or
             list[:obj:`ConfigDict`], optional): Initialization config dict.
             Defaults to None.
-        fusion_mode (str): Branch fusion, 'concat' or 'add'.
+        fusion_mode (str): Branch fusion: 'concat', 'add' (sum all branch
+            outputs), or 'add_last' (first split plus the final bottleneck
+            output, without accumulating intermediate branches).
             Defaults to 'concat'.
     """
 
@@ -1495,8 +1497,9 @@ class CSPLayerWithTwoConv(BaseModule):
             init_cfg: OptMultiConfig = None,
             fusion_mode: str = 'concat') -> None:
         super().__init__(init_cfg=init_cfg)
-        if fusion_mode not in ('concat', 'add'):
-            raise ValueError("fusion_mode must be 'concat' or 'add'")
+        if fusion_mode not in ('concat', 'add', 'add_last'):
+            raise ValueError(
+                "fusion_mode must be 'concat', 'add' or 'add_last'")
         self.fusion_mode = fusion_mode
 
         self.mid_channels = int(out_channels * expand_ratio)
@@ -1508,7 +1511,7 @@ class CSPLayerWithTwoConv(BaseModule):
             norm_cfg=norm_cfg,
             act_cfg=act_cfg)
         final_in_channels = (2 + num_blocks) * self.mid_channels
-        if fusion_mode == 'add':
+        if fusion_mode in ('add', 'add_last'):
             final_in_channels = self.mid_channels
         self.final_conv = ConvModule(
             final_in_channels,
@@ -1539,6 +1542,11 @@ class CSPLayerWithTwoConv(BaseModule):
         # x_main.extend(blocks(x_main[-1]) for blocks in self.blocks)
         ## Modified code
         first_half, second_half = x_main.split((self.mid_channels, self.mid_channels), 1)
+        if self.fusion_mode == 'add_last':
+            last_block = second_half
+            for block in self.blocks:
+                last_block = block(last_block)
+            return self.final_conv(first_half + last_block)
         if self.fusion_mode == 'add':
             merged = first_half + second_half
             last_block = second_half

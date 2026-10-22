@@ -185,7 +185,7 @@ class YOLOv8CSPDarknet(BaseBackbone):
             and its variants only. Defaults to False.
         init_cfg (Union[dict,list[dict]], optional): Initialization config
             dict. Defaults to None.
-        csp_fusion_mode (str): C2f branch fusion, 'concat' or 'add'.
+        csp_fusion_mode (str): C2f branch fusion, 'concat', 'add' or 'add_last'.
             Defaults to 'concat'.
         spp_fusion_mode (str): SPPF branch fusion, 'concat' or 'add'.
             Defaults to 'concat'.

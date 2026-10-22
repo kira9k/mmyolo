@@ -21,5 +21,5 @@ deploy_cfg = dict(
     output_names=['head_s4', 'head_s8', 'head_s16', 'head_s32'])
 
 # P2 changes neck/head shapes; use a separate training run.
-load_from = None
-resume = False
+#load_from = "/mmyolo/work_dirs/yolov8_s_p2_cls128_small_dataset_v3/best_coco_bbox_mAP_epoch_20.pth"
+resume = True

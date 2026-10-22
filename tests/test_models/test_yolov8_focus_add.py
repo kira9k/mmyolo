@@ -28,6 +28,7 @@ class TestYOLOv8FocusAdd(TestCase):
     widen_factor = 0.25
     stem_channels = 32
     spp_fusion_mode = 'add'
+    csp_fusion_mode = 'add'
 
     def build_model(self):
         cfg = Config.fromfile(self.config_path)
@@ -87,7 +88,7 @@ class TestYOLOv8FocusAdd(TestCase):
                          factor * spp.conv1.conv.out_channels)
         for layer in (*model.backbone.modules(), *model.neck.modules()):
             if isinstance(layer, CSPLayerWithTwoConv):
-                self.assertEqual(layer.fusion_mode, 'add')
+                self.assertEqual(layer.fusion_mode, self.csp_fusion_mode)
         self.assertIsNone(cfg.load_from)
         self.assertFalse(cfg.resume)
         for part in (model.backbone, model.neck, model.bbox_head.head_module):
@@ -465,3 +466,19 @@ class TestYOLOv8SFocusSPPConcat(TestYOLOv8SFocusAdd):
 
     config_path = ROOT / 'configs/yolov8/yolov8_s_focus_add_spp_concat_surgery2.py'
     spp_fusion_mode = 'concat'
+
+
+class TestYOLOv8NFocusAddLastSPPConcat(TestYOLOv8NFocusSPPConcat):
+
+    config_path = (
+        ROOT / 'configs/yolov8/'
+        'yolov8_n_focus_add_last_spp_concat_surgery2.py')
+    csp_fusion_mode = 'add_last'
+
+
+class TestYOLOv8SFocusAddLastSPPConcat(TestYOLOv8SFocusSPPConcat):
+
+    config_path = (
+        ROOT / 'configs/yolov8/'
+        'yolov8_s_focus_add_last_spp_concat_surgery2.py')
+    csp_fusion_mode = 'add_last'

@@ -71,25 +71,33 @@ class TestStructuralPruning(TestCase):
         return torch.randn(1, model.backbone.input_channels, 64, 96)
 
     def test_csp_trace_rewrite_is_temporary_and_equivalent(self):
-        _, model = self.build()
-        x = self.example(model)
-        before_keys = set(model.state_dict())
-        with torch.no_grad():
-            before = RawYOLOv8(model)(x)
-            with traceable_csp_splits(model):
-                torch.testing.assert_close(
-                    RawYOLOv8(model)(x), before, rtol=1e-4, atol=1e-5)
-            torch.testing.assert_close(
-                RawYOLOv8(model)(x), before, rtol=0, atol=0)
-        self.assertEqual(set(model.state_dict()), before_keys)
-        self.assertFalse(
-            any('pruning_first' in n for n, _ in model.named_modules()))
+        for config in (RGB, 'yolov8_n_focus_add_last_spp_concat_surgery2.py',
+                       'yolov8_s_focus_add_last_spp_concat_surgery2.py'):
+            with self.subTest(config=config):
+                _, model = self.build(config)
+                # Separate convolution kernels can round differently in float32.
+                model.double()
+                x = self.example(model).double()
+                before_keys = set(model.state_dict())
+                with torch.no_grad():
+                    before = RawYOLOv8(model)(x)
+                    with traceable_csp_splits(model):
+                        torch.testing.assert_close(
+                            RawYOLOv8(model)(x), before, rtol=1e-8, atol=1e-9)
+                    torch.testing.assert_close(
+                        RawYOLOv8(model)(x), before, rtol=0, atol=0)
+                self.assertEqual(set(model.state_dict()), before_keys)
+                self.assertFalse(
+                    any('pruning_first' in n
+                        for n, _ in model.named_modules()))
 
     def test_rgb_focus_add_and_spp_concat(self):
         configs = (RGB, 'yolov8_n_focus_add_surgery2.py',
                    'yolov8_s_focus_add_surgery2.py',
                    'yolov8_n_focus_add_spp_concat_surgery2.py',
-                   'yolov8_s_focus_add_spp_concat_surgery2.py')
+                   'yolov8_s_focus_add_spp_concat_surgery2.py',
+                   'yolov8_n_focus_add_last_spp_concat_surgery2.py',
+                   'yolov8_s_focus_add_last_spp_concat_surgery2.py')
         for config in configs:
             with self.subTest(config=config):
                 cfg, model = self.build(config)

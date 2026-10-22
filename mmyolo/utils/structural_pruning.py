@@ -40,6 +40,10 @@ def refresh_channel_attributes(model):
 def _separate_csp_forward(self, x):
     first = self.pruning_first(x)
     last = self.pruning_second(x)
+    if self.fusion_mode == 'add_last':
+        for block in self.blocks:
+            last = block(last)
+        return self.final_conv(first + last)
     if self.fusion_mode == 'add':
         merged = first + last
         for block in self.blocks:

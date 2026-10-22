@@ -17,6 +17,7 @@ from mmengine.runner import load_checkpoint
 # Add MMYOLO ROOT to sys.path
 sys.path.append(str(Path(__file__).resolve().parents[3]))
 from projects.easydeploy.model import DeployModel, MMYOLOBackend  # noqa E402
+from projects.easydeploy.model.pooling import replace_maxpool5x5  # noqa E402
 
 from mmyolo.models.dense_heads import YOLOv5HeadModule, YOLOv7HeadModule, YOLOv8HeadModule, YOLOv6HeadModule, YOLOXHead
 from mmyolo.utils.save_model import save_model_proto
@@ -45,6 +46,9 @@ def parse_args():
     parser.add_argument('checkpoint', help='Checkpoint file')
     parser.add_argument(
         '--model-only', action='store_true', help='Export model only')
+    parser.add_argument(
+        '--maxpool-3x3', action='store_true',
+        help='Replace stride-1 padded MaxPool 5x5 with two equivalent 3x3 pools')
     parser.add_argument(
         '--raw-output-format',
         choices=('separate', 'combined'),
@@ -208,6 +212,9 @@ def main():
         postprocess_cfg.export_type = args.export_type
         output_names = ['detections']
 		    
+    if getattr(args, 'maxpool_3x3', False):
+        replace_maxpool5x5(baseModel)
+
     if args.model_surgery:
         surgery_fn = xmodelopt.surgery.v1.convert_to_lite_model if args.model_surgery == 1 \
                      else (xmodelopt.surgery.v2.convert_to_lite_fx if args.model_surgery == 2 else None)
