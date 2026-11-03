@@ -12,6 +12,7 @@ import onnx
 import onnxruntime as ort
 import torch
 import torch.nn as nn
+from mmengine.config import Config
 
 from projects.easydeploy.tools import export_onnx
 
@@ -26,10 +27,26 @@ class TestExportONNXArguments(TestCase):
 
     def test_default_uses_config_output_format(self):
         self.assertIsNone(self.parse('--model-only').raw_output_format)
-        self.assertFalse(self.parse('--model-only').maxpool_3x3)
+        self.assertIsNone(self.parse('--model-only').maxpool_kernel_size)
+        self.assertFalse(self.parse('--model-only').replace_add_with_concat_conv)
+        self.assertTrue(self.parse('--replace-add-with-concat-conv').replace_add_with_concat_conv)
 
     def test_maxpool_option(self):
-        self.assertTrue(self.parse('--maxpool-3x3').maxpool_3x3)
+        for size in (3, 5):
+            self.assertEqual(
+                self.parse(f'--maxpool-{size}x{size}').maxpool_kernel_size,
+                size)
+            self.assertEqual(
+                self.parse('--maxpool-kernel-size',
+                           str(size)).maxpool_kernel_size, size)
+
+    def test_invalid_pooling_options(self):
+        for args in (('--maxpool-kernel-size', '7'), ('--maxpool-3x3',
+                                                      '--maxpool-5x5'),
+                     ('--maxpool-kernel-size', '5', '--maxpool-3x3')):
+            with self.subTest(args=args), contextlib.redirect_stderr(io.StringIO()), \
+                    self.assertRaises(SystemExit):
+                self.parse(*args)
 
     def test_explicit_output_formats(self):
         for value in ('separate', 'combined'):
@@ -91,6 +108,104 @@ class TestExportONNXArguments(TestCase):
 
 
 class TestMaxPoolDecomposition(TestCase):
+
+    def test_rectangular_focus_export_with_surgery_and_nms(self):
+        from mmyolo.registry import MODELS
+        from mmyolo.utils import register_all_modules
+        register_all_modules()
+        root = Path(__file__).resolve().parents[2]
+        cfg = Config.fromfile(
+            root /
+            'configs/yolov8/yolov8_n_focus_add_last_spp_concat_surgery2.py')
+        model = MODELS.build(cfg.model).eval()
+        sample = torch.rand(1, 16, 120, 160).numpy()
+        reference = None
+        options = ort.SessionOptions()
+        options.intra_op_num_threads = 1
+        with tempfile.TemporaryDirectory() as directory:
+            directory = Path(directory)
+            config, checkpoint = directory / 'model.py', directory / 'model.pth'
+            cfg.dump(config)
+            torch.save(dict(state_dict=model.state_dict()), checkpoint)
+            for model_only in (True, False):
+                output_dir = directory / ('raw' if model_only else 'nms')
+                for size, replace_add in ((5, False), (3, False), (5, True)):
+                    with self.subTest(model_only=model_only, size=size):
+                        argv = [
+                            'export_onnx.py',
+                            str(config),
+                            str(checkpoint), '--model-surgery', '2',
+                            '--maxpool-kernel-size',
+                            str(size), '--img-size', '480', '640',
+                            '--simplify', '--work-dir',
+                            str(output_dir)
+                        ]
+                        argv += ['--model-only'] if model_only else [
+                            '--export-type', 'YOLOv5'
+                        ]
+                        if replace_add:
+                            argv += ['--replace-add-with-concat-conv']
+                        with patch.object(sys, 'argv',
+                                          argv), contextlib.redirect_stdout(
+                                              io.StringIO()):
+                            export_onnx.main()
+                        stem = 'model' + ('_addconcatconv' if replace_add else '')
+                        path = output_dir / f'{stem}_pool{size}x{size}.onnx'
+                        self.assertTrue(path.with_suffix('.prototxt').exists())
+                        graph = onnx.load(path)
+                        onnx.checker.check_model(graph)
+                        if replace_add:
+                            replacements = [node for node in graph.graph.node
+                                            if node.name.startswith('add_concat_conv_')
+                                            and node.op_type == 'Conv']
+                            self.assertEqual(len(replacements), 18)
+                            if model_only:
+                                self.assertFalse(any(node.op_type == 'Add' for node in graph.graph.node))
+                        pools = [
+                            node for node in graph.graph.node
+                            if node.op_type == 'MaxPool'
+                        ]
+                        self.assertEqual(len(pools), 6 if size == 3 else 3)
+                        kernels = [
+                            list(
+                                next(a for a in node.attribute
+                                     if a.name == 'kernel_shape').ints)
+                            for node in pools
+                        ]
+                        self.assertEqual(kernels, [[size, size]] * len(pools))
+                        self.assertEqual([
+                            d.dim_value for d in
+                            graph.graph.input[0].type.tensor_type.shape.dim
+                        ], [1, 16, 120, 160])
+                        session = ort.InferenceSession(
+                            str(path),
+                            options,
+                            providers=['CPUExecutionProvider'])
+                        actual = session.run(None, {'images': sample})
+                        if model_only:
+                            self.assertEqual(
+                                [list(value.shape) for value in actual],
+                                [[1, 65, 60, 80], [1, 65, 30, 40],
+                                 [1, 65, 15, 20]])
+                            if reference is None:
+                                reference = actual
+                            for value, expected in zip(actual, reference):
+                                torch.testing.assert_close(
+                                    torch.from_numpy(value),
+                                    torch.from_numpy(expected),
+                                    rtol=1e-4,
+                                    atol=2e-5)
+                        else:
+                            self.assertEqual(graph.graph.output[0].name,
+                                             'detections')
+                            self.assertEqual(len(actual), 1)
+                            self.assertEqual(actual[0].shape[0], 1)
+                            self.assertEqual(actual[0].shape[-1], 6)
+                        self.assertTrue(
+                            all(
+                                torch.isfinite(torch.from_numpy(value)).all()
+                                for value in actual))
+                self.assertEqual(len(list(output_dir.glob('*.onnx'))), 3)
 
     def test_equivalent_pooling_including_small_images(self):
         original = nn.Sequential(nn.MaxPool2d(5, stride=1, padding=2)).eval()

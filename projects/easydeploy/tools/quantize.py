@@ -1,4 +1,5 @@
 import argparse
+import hashlib
 import json
 import os
 import random
@@ -19,7 +20,14 @@ from mmengine.runner import load_checkpoint
 # Add MMYOLO ROOT to sys.path
 sys.path.append(str(Path(__file__).resolve().parents[3]))
 from projects.easydeploy.model import DeployModel, MMYOLOBackend
-from projects.easydeploy.model.pooling import replace_maxpool5x5
+from projects.easydeploy.model.add_replacement import replace_exported_adds
+from projects.easydeploy.model.pooling import get_surgery_kwargs, replace_maxpool5x5
+from projects.easydeploy.model.quantization import (add_adjacent_convolutions,
+                                                    convolution_precisions,
+                                                    make_quantizer,
+                                                    select_fp32_modules,
+                                                    tensor_add_nodes,
+                                                    validate_fp32_adds)
 
 from mmyolo.datasets.transforms import LetterResize, YOLOv5KeepRatioResize
 from mmyolo.models.dense_heads import YOLOv8HeadModule
@@ -238,6 +246,37 @@ def parse_args():
     parser.add_argument('--num-workers', type=int, default=0)
     parser.add_argument('--seed', type=int, default=0)
     parser.add_argument('--img-size', nargs='+', type=int, default=[640, 640])
+    parser.add_argument(
+        '--replace-add-with-concat-conv', action='store_true',
+        help='Replace equal-shape NCHW feature Add by Concat + fixed 1x1 Conv')
+    parser.add_argument(
+        '--keep-last-convs-fp32',
+        action='store_true',
+        help='Keep final cls and reg prediction convolutions in FP32')
+    add_policy = parser.add_mutually_exclusive_group()
+    add_policy.add_argument(
+        '--keep-add-fp32',
+        action='store_true',
+        help='Keep Add/Add+ReLU and nearest convolutions on all input/output '
+        'tensor paths in FP32')
+    add_policy.add_argument(
+        '--add-fp32-only',
+        action='store_true',
+        help='Keep only Add/Add+ReLU in FP32 without automatically excluding '
+        'neighboring convolutions (previous --keep-add-fp32 behavior)')
+    parser.add_argument(
+        '--exclude-modules',
+        action='extend',
+        nargs='+',
+        default=[],
+        metavar='PATTERN',
+        help='Keep named Conv2d layers or entire convolution blocks in FP32; '
+        'supports shell-style patterns and repeated options')
+    parser.add_argument(
+        '--list-conv-modules',
+        action='store_true',
+        help='List convolution names after surgery and exit without calibration'
+    )
     pooling = parser.add_mutually_exclusive_group()
     pooling.add_argument(
         '--maxpool-kernel-size',
@@ -264,6 +303,8 @@ def parse_args():
         '--work-dir',
         help='Output directory (default: checkpoint directory/pt)')
     args = parser.parse_args()
+    args.keep_add_convs_fp32 = args.keep_add_fp32
+    args.keep_add_fp32 = args.keep_add_fp32 or args.add_fp32_only
     if args.duplicate_cls_channels < 1:
         parser.error('--duplicate-cls-channels must be positive')
     if args.num_calib_images < 1 or args.num_workers < 0:
@@ -326,30 +367,6 @@ def get_pt2e_quantization_api():
             get_symmetric_quantization_config, api)
 
 
-def get_surgery_kwargs(maxpool_kernel_size):
-    """Disable implicit MaxPool decomposition in both supported surgery APIs."""
-    if maxpool_kernel_size is None:
-        return {}
-    if maxpool_kernel_size not in (3, 5):
-        raise ValueError('maxpool_kernel_size must be 3 or 5')
-    surgery = xmodelopt.surgery.v2
-    if hasattr(surgery, 'get_replacement_flag_dict_default'):
-        replacements = dict(surgery.get_replacement_flag_dict_default())
-        for key in replacements:
-            if 'maxpool' in str(key).lower():
-                replacements[key] = False
-    elif hasattr(surgery, 'get_replacement_dict_default'):
-        replacements = {
-            key: value
-            for key, value in surgery.get_replacement_dict_default().items()
-            if 'maxpool' not in str(key).lower()
-        }
-    else:
-        raise RuntimeError(
-            'Cannot control MaxPool replacement in this surgery version')
-    return dict(replacement_dict=replacements)
-
-
 def apply_model_surgery(model, maxpool_kernel_size=None):
     kwargs = get_surgery_kwargs(maxpool_kernel_size)
     if maxpool_kernel_size == 3:
@@ -375,29 +392,54 @@ def get_maxpool_kernels(graph):
 
 def main():
     args = parse_args()
-    prepare_pt2e, convert_pt2e, quantizer_cls, qconfig_fn, api = get_pt2e_quantization_api(
-    )
     torch.manual_seed(args.seed)
     output_dir = (
         Path(args.work_dir)
         if args.work_dir else Path(args.checkpoint).parent / 'pt')
     suffix = f'_int8_{args.raw_output_format}'
+    if args.replace_add_with_concat_conv:
+        suffix += '_addconcatconv'
     if args.duplicate_cls_channels != 1:
         suffix += f'_cls{args.duplicate_cls_channels}'
     if args.maxpool_kernel_size is not None:
         suffix += f'_pool{args.maxpool_kernel_size}x{args.maxpool_kernel_size}'
+    if args.keep_last_convs_fp32:
+        suffix += '_fp32last'
+    if args.keep_add_fp32:
+        suffix += '_fp32add'
+        if args.keep_add_convs_fp32:
+            suffix += '_convs'
+    if args.exclude_modules:
+        policy = json.dumps(sorted(set(args.exclude_modules))).encode()
+        suffix += '_fp32sel_' + hashlib.sha256(policy).hexdigest()[:8]
     stem = Path(args.checkpoint).stem + suffix
     paths = {
         kind: output_dir / (stem + extension)
         for kind, extension in (('jit', '.jit.pt'), ('pt2', '.pt2'), ('report',
                                                                       '.json'))
     }
-    if not args.force and any(path.exists() for path in paths.values()):
+    if not args.list_conv_modules and not args.force and any(
+            path.exists() for path in paths.values()):
         raise FileExistsError(
             'Quantized outputs already exist; use another --work-dir or --force'
         )
 
     model = build_model_from_cfg(args.config, args.checkpoint, 'cpu')
+    apply_model_surgery(model, args.maxpool_kernel_size)
+    load_checkpoint(model, args.checkpoint, map_location='cpu', strict=True)
+    deploy = build_quantization_deploy_model(
+        model,
+        raw_output_format=args.raw_output_format,
+        duplicate_cls_channels=args.duplicate_cls_channels).eval()
+    if args.list_conv_modules:
+        for name, module in model.named_modules():
+            if isinstance(module, nn.Conv2d):
+                print(
+                    f'{name}: {module.in_channels} -> {module.out_channels}, '
+                    f'kernel={module.kernel_size}')
+        return
+    fp32_modules, fp32_convs = select_fp32_modules(model, args.exclude_modules,
+                                                   args.keep_last_convs_fp32)
     transform = build_focus_calibration_transform(model.cfg, args.img_size)
     dataset = CustomImageDataset(
         args.calib_dir,
@@ -405,17 +447,33 @@ def main():
         max_images=args.num_calib_images,
         seed=args.seed)
     example = dataset[0][0].unsqueeze(0)
-    apply_model_surgery(model, args.maxpool_kernel_size)
-    load_checkpoint(model, args.checkpoint, map_location='cpu', strict=True)
-    deploy = build_quantization_deploy_model(
-        model,
-        raw_output_format=args.raw_output_format,
-        duplicate_cls_channels=args.duplicate_cls_channels).eval()
+    prepare_pt2e, convert_pt2e, quantizer_cls, qconfig_fn, api = get_pt2e_quantization_api(
+    )
     with torch.no_grad():
         fp32_outputs = deploy(example)
     exported = torch.export.export(deploy, (example, )).module()
-    quantizer = quantizer_cls().set_global(qconfig_fn())
+    add_fp32_convs = (add_adjacent_convolutions(exported)
+                      if args.keep_add_convs_fp32 else [])
+    add_replacements = (replace_exported_adds(exported)
+                         if args.replace_add_with_concat_conv else [])
+    if args.replace_add_with_concat_conv:
+        print(f'Replaced {len(add_replacements)} feature Add operators by Concat+Conv')
+        with torch.no_grad():
+            torch.testing.assert_close(exported(example), fp32_outputs,
+                                       rtol=1e-4, atol=1e-5)
+    replacement_fp32 = [row['module'] for row in add_replacements
+                        if args.keep_add_fp32]
+    add_fp32_convs = sorted(set(add_fp32_convs))
+    fp32_modules = sorted(set(fp32_modules) | set(add_fp32_convs) | set(replacement_fp32))
+    fp32_convs = sorted(set(fp32_convs) | set(add_fp32_convs) | set(replacement_fp32))
+    if args.keep_add_convs_fp32:
+        print(f'Keeping {len(add_fp32_convs)} Add-adjacent convolutions in FP32')
+    quantizer = make_quantizer(quantizer_cls, qconfig_fn(), exported,
+                               fp32_modules, keep_add_fp32=args.keep_add_fp32)
     prepared = prepare_pt2e(exported, quantizer)
+    fp32_add_nodes = validate_fp32_adds(prepared) if args.keep_add_fp32 else []
+    if args.keep_add_fp32:
+        print(f'Keeping {len(fp32_add_nodes)} tensor Add operators in FP32')
     loader = DataLoader(
         dataset,
         batch_size=1,
@@ -426,12 +484,27 @@ def main():
         for images, _ in tqdm(loader, desc='Calibration'):
             prepared(images)
     converted = convert_pt2e(prepared).cpu()
+    if args.keep_add_fp32:
+        converted_adds = validate_fp32_adds(converted)
+        if len(converted_adds) != len(fp32_add_nodes):
+            raise RuntimeError('Converted graph changed the number of FP32 Add operators')
     quantization_ops = [
         str(node.target) for node in converted.graph.nodes
         if 'quantized_decomposed.quantize_' in str(node.target)
     ]
     if not quantization_ops:
         raise RuntimeError('PT2E did not insert any quantization operators')
+    precisions = convolution_precisions(converted)
+    float_names = {
+        row['module']
+        for row in precisions
+        if not row['quantized_weight'] and row['weight_dtype'] == 'float32'
+    }
+    missing = set(fp32_convs) - float_names
+    if missing:
+        raise RuntimeError(
+            f'Requested FP32 convolutions were not preserved: {sorted(missing)}'
+        )
     maxpool_kernels = get_maxpool_kernels(converted.graph)
     if args.maxpool_kernel_size is not None and any(
             kernel != [args.maxpool_kernel_size] * 2
@@ -472,6 +545,18 @@ def main():
         duplicate_cls_channels=args.duplicate_cls_channels,
         maxpool_kernel_size=args.maxpool_kernel_size,
         maxpool_kernels=maxpool_kernels,
+        keep_last_convs_fp32=args.keep_last_convs_fp32,
+        keep_add_fp32=args.keep_add_fp32,
+        replace_add_with_concat_conv=args.replace_add_with_concat_conv,
+        add_concat_conv_replacements=add_replacements,
+        keep_add_convs_fp32=args.keep_add_convs_fp32,
+        add_adjacent_fp32_convolutions=add_fp32_convs,
+        fp32_add_nodes=fp32_add_nodes,
+        tensor_add_count=len(tensor_add_nodes(converted.graph)),
+        exclude_module_patterns=args.exclude_modules,
+        fp32_modules=fp32_modules,
+        fp32_convolutions=fp32_convs,
+        convolution_precisions=precisions,
         calibration_images=dataset.image_paths,
         seed=args.seed,
         preprocess=preprocess,

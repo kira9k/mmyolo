@@ -14,7 +14,7 @@ test_ann_file = 'ann.json'
 test_data_prefix = 'images'
 num_classes = 1  # Number of classes for classification
 # Batch size of a single GPU during training
-train_batch_size_per_gpu = 16 
+train_batch_size_per_gpu = 32
 # Worker to pre-fetch data for each single GPU during training
 train_num_workers = 8
 # persistent_workers must be False if num_workers is 0
@@ -41,7 +41,7 @@ model_test_cfg = dict(
 
 # ========================Possible modified parameters========================
 # -----data related-----
-img_scale = (640, 640)
+img_scale = (640, 480)
 #img_scale = (640, 640)  # width, height
 # Dataset type, this will be used to define the dataset
 dataset_type = 'YOLOv5CocoDataset'
@@ -94,7 +94,7 @@ weight_decay = 0.0005
 save_epoch_intervals = 10
 # validation intervals in stage 2
 val_interval_stage2 = 1
-# The maximum checkpoints to keep.
+# Retention used if ordinary checkpoints are explicitly enabled.
 max_keep_ckpts = 2
 # Single-scale training is recommended to
 # be turned on, which can speed up training.
@@ -352,8 +352,10 @@ default_hooks = dict(
         lr_factor=lr_factor,
         max_epochs=max_epochs),
     checkpoint=dict(
-        type='CheckpointHook',
+        type='LastEpochCheckpointHook',
         interval=save_epoch_intervals,
+        save_last_epochs=10,
+        save_only_best=True,
         save_best='auto',
         max_keep_ckpts=max_keep_ckpts))
 
@@ -389,8 +391,7 @@ train_cfg = dict(
     type='EpochBasedTrainLoop',
     max_epochs=max_epochs,
     val_interval=save_epoch_intervals,
-    dynamic_intervals=[((max_epochs - close_mosaic_epochs),
-                        val_interval_stage2)])
+    dynamic_intervals=[(max(2, max_epochs - 10 + 2), val_interval_stage2)])
 
 val_cfg = dict(type='ValLoop')
 test_cfg = dict(type='TestLoop')

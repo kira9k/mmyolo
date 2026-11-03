@@ -13,6 +13,7 @@ from mmyolo.models.dense_heads import YOLOv5HeadModule, YOLOv7HeadModule, YOLOv8
 
 from mmyolo.registry import RUNNERS
 from mmyolo.utils import is_metainfo_lower
+from mmyolo.utils.training_defaults import configure_yolov8_training_defaults
 
 from edgeai_torchmodelopt import xmodelopt
 # from edgeai_torchtoolkit import xao
@@ -79,6 +80,7 @@ def main():
     cfg.launcher = args.launcher
     if args.cfg_options is not None:
         cfg.merge_from_dict(args.cfg_options)
+    configure_yolov8_training_defaults(cfg, args.cfg_options)
 
     # work_dir is determined in this priority: CLI > segment in file > filename
     if args.work_dir is not None:

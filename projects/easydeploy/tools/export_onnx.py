@@ -3,6 +3,7 @@ import json
 import os
 import sys
 import warnings
+from functools import partial
 from io import BytesIO
 from pathlib import Path
 
@@ -17,7 +18,8 @@ from mmengine.runner import load_checkpoint
 # Add MMYOLO ROOT to sys.path
 sys.path.append(str(Path(__file__).resolve().parents[3]))
 from projects.easydeploy.model import DeployModel, MMYOLOBackend  # noqa E402
-from projects.easydeploy.model.pooling import replace_maxpool5x5  # noqa E402
+from projects.easydeploy.model.add_replacement import replace_onnx_adds  # noqa E402
+from projects.easydeploy.model.pooling import get_surgery_kwargs, replace_maxpool5x5  # noqa E402
 
 from mmyolo.models.dense_heads import YOLOv5HeadModule, YOLOv7HeadModule, YOLOv8HeadModule, YOLOv6HeadModule, YOLOXHead
 from mmyolo.utils.save_model import save_model_proto
@@ -41,14 +43,26 @@ def parse_args():
     parser.add_argument(
         '--model-surgery',
         type=int,
+        choices=(0, 1, 2),
         default=0,
         help='create lite version of a model by applying a set of fx based transformations on the model')
     parser.add_argument('checkpoint', help='Checkpoint file')
     parser.add_argument(
         '--model-only', action='store_true', help='Export model only')
     parser.add_argument(
-        '--maxpool-3x3', action='store_true',
-        help='Replace stride-1 padded MaxPool 5x5 with two equivalent 3x3 pools')
+        '--replace-add-with-concat-conv', action='store_true',
+        help='Replace equal-shape NCHW feature Add by Concat + fixed 1x1 Conv')
+    pooling = parser.add_mutually_exclusive_group()
+    pooling.add_argument(
+        '--maxpool-kernel-size', type=int, choices=(3, 5), default=None,
+        help='Keep SPPF MaxPool 5x5 or decompose into 3x3 pools. '
+             'Omit to keep the installed surgery defaults.')
+    pooling.add_argument(
+        '--maxpool-3x3', dest='maxpool_kernel_size', action='store_const', const=3,
+        help='Alias for --maxpool-kernel-size 3')
+    pooling.add_argument(
+        '--maxpool-5x5', dest='maxpool_kernel_size', action='store_const', const=5,
+        help='Alias for --maxpool-kernel-size 5')
     parser.add_argument(
         '--raw-output-format',
         choices=('separate', 'combined'),
@@ -212,12 +226,17 @@ def main():
         postprocess_cfg.export_type = args.export_type
         output_names = ['detections']
 		    
-    if getattr(args, 'maxpool_3x3', False):
+    maxpool_kernel_size = getattr(args, 'maxpool_kernel_size', None)
+    if maxpool_kernel_size == 3:
         replace_maxpool5x5(baseModel)
 
     if args.model_surgery:
         surgery_fn = xmodelopt.surgery.v1.convert_to_lite_model if args.model_surgery == 1 \
                      else (xmodelopt.surgery.v2.convert_to_lite_fx if args.model_surgery == 2 else None)
+        surgery_fn = partial(surgery_fn, **get_surgery_kwargs(
+            maxpool_kernel_size, version=args.model_surgery))
+        head_surgery_fn = partial(xmodelopt.surgery.v1.convert_to_lite_model,
+                                  **get_surgery_kwargs(maxpool_kernel_size, version=1))
         
         if isinstance(baseModel.bbox_head.head_module, (YOLOv6HeadModule)):
             #For YOLOv6 model, the flow is different as reparameterization has to happen before surgery as it is lost during fx based transformation
@@ -227,7 +246,7 @@ def main():
             deploy_model.baseModel.neck = surgery_fn(deploy_model.baseModel.neck)
             # Only head_module of head goes through model_surgery as it contains all compute layers
             # deploy_model.baseModel.bbox_head.head_module = surgery_fn(deploy_model.baseModel.bbox_head.head_module)
-            deploy_model.baseModel.bbox_head.head_module = xmodelopt.surgery.v1.convert_to_lite_model(deploy_model.baseModel.bbox_head.head_module)
+            deploy_model.baseModel.bbox_head.head_module = head_surgery_fn(deploy_model.baseModel.bbox_head.head_module)
         else:
             baseModel.backbone = surgery_fn(baseModel.backbone)
             baseModel.neck = surgery_fn(baseModel.neck)
@@ -240,7 +259,7 @@ def main():
                 reg_max = None
                 proj = None
             if isinstance(baseModel.bbox_head.head_module, (YOLOv8HeadModule,)):
-                baseModel.bbox_head.head_module = xmodelopt.surgery.v1.convert_to_lite_model(baseModel.bbox_head.head_module)
+                baseModel.bbox_head.head_module = head_surgery_fn(baseModel.bbox_head.head_module)
             if not isinstance(baseModel.bbox_head.head_module, (YOLOv5HeadModule, YOLOv7HeadModule, YOLOv8HeadModule)):
                 baseModel.bbox_head.head_module = surgery_fn(baseModel.bbox_head.head_module)
             if reg_max is not None and proj is not None:
@@ -259,9 +278,13 @@ def main():
     # dry run
     fake_outputs = deploy_model(fake_input)
 
-    save_onnx_path = os.path.join(
-        args.work_dir,
-        os.path.basename(args.checkpoint).replace('pth', 'onnx'))
+    output_stem = Path(args.checkpoint).stem
+    replace_add = getattr(args, 'replace_add_with_concat_conv', False)
+    if replace_add:
+        output_stem += '_addconcatconv'
+    if maxpool_kernel_size is not None:
+        output_stem += f'_pool{maxpool_kernel_size}x{maxpool_kernel_size}'
+    save_onnx_path = os.path.join(args.work_dir, output_stem + '.onnx')
     # export onnx
     with BytesIO() as f:
         # Torch debug names cannot be numeric; assign reference names in ONNX.
@@ -307,6 +330,11 @@ def main():
         xonnx.prune_layer_names(save_onnx_path, save_onnx_path, opset_version=args.opset)
 
     onnx_model = onnx.load(save_onnx_path)
+    if maxpool_kernel_size is not None:
+        kernels = [onnx.helper.get_attribute_value(attribute)
+                   for node in onnx_model.graph.node if node.op_type == 'MaxPool'
+                   for attribute in node.attribute if attribute.name == 'kernel_shape']
+        print_log(f'MaxPool kernels in saved ONNX: {kernels}')
     if deploy_cfg.get('preprocess'):
         preprocess = dict(deploy_cfg['preprocess'], source_size=args.img_size)
         properties = {p.key: p.value for p in onnx_model.metadata_props}
@@ -323,6 +351,16 @@ def main():
                      save_onnx_path,
                      output_names=output_names,
                      export_type=args.export_type)
+
+    # Generate detector metadata from the original head connections: the new
+    # internal Concat nodes are not prediction outputs.
+    if replace_add:
+        onnx_model, replacements = replace_onnx_adds(onnx_model)
+        properties = {p.key: p.value for p in onnx_model.metadata_props}
+        properties['add_concat_conv_replacements'] = json.dumps(replacements)
+        onnx.helper.set_model_props(onnx_model, properties)
+        onnx.save(onnx_model, save_onnx_path)
+        print_log(f'Replaced {len(replacements)} feature Add operators by Concat+Conv')
 
     print(f'Prototxt export success, save into {save_prototxt_path}')
 
